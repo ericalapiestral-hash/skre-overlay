@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none'; script-src 'self'; style-src 'self';" />
+  <title>턴 영역 지정</title>
+  <link rel="stylesheet" href="picker.css" />
+</head>
+<body>
+  <div id="dim"></div>
+  <div id="guide">
+    게임 화면에서 <b>턴 숫자만</b> 드래그로 감싸주세요<br />
+    <small>
+      숫자에 딱 맞을수록 정확합니다 — 아이콘·글자가 같이 들어오면 헷갈려 해요 ·
+      <b>ESC</b> 또는 <b>우클릭</b> 취소
+    </small>
+  </div>
+  <div id="rect"><span id="size"></span></div>
+  <script src="picker.js"></script>
+</body>
+</html>

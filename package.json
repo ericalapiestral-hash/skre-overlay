@@ -1,0 +1,52 @@
+{
+  "name": "skre-overlay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "세븐나이츠 리버스 파괴신·공성전 빌드 오버레이 — 게임 위에 스킬 순서를 띄우고 턴을 읽어 자동으로 넘긴다",
+  "author": "낭만주의",
+  "license": "UNLICENSED",
+  "main": "src/main/index.js",
+  "scripts": {
+    "start": "electron .",
+    "test": "node --test \"test/**/*.test.js\"",
+    "typecheck": "tsc -p tsconfig.json && tsc -p tsconfig.renderer.json",
+    "check": "npm run typecheck && npm test",
+    "doctor": "electron . --doctor",
+    "templates": "electron tools/make-templates.js",
+    "dist": "electron-builder --win",
+    "dist:dir": "electron-builder --win --dir",
+    "fixtures": "electron tools/make-fixtures.js",
+    "bench": "node tools/bench-reader.js"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.2",
+    "electron": "^33.2.1",
+    "electron-builder": "^25.1.8",
+    "typescript": "~5.7.2"
+  },
+  "build": {
+    "appId": "kr.skre.overlay",
+    "productName": "SKRE Overlay",
+    "directories": {
+      "output": "dist"
+    },
+    "files": [
+      "src/**/*",
+      "package.json",
+      "!**/*.map"
+    ],
+    "win": {
+      "target": [
+        {
+          "target": "portable",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "portable": {
+      "artifactName": "skre-overlay-${version}.exe"
+    }
+  }
+}

@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy"
+    content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; media-src 'self' blob:;" />
+  <title>SKRE 오버레이</title>
+  <link rel="stylesheet" href="overlay.css" />
+</head>
+<body>
+  <div id="app">
+    <header id="bar">
+      <span id="grip" aria-hidden="true">⠿</span>
+      <span id="title">파괴신 · 공성전</span>
+      <span id="turn" title="인식된 턴">—</span>
+      <button id="btn-settings" title="설정">⚙</button>
+      <button id="btn-collapse" title="접기 / 펼치기">▾</button>
+      <button id="btn-quit" title="완전히 종료">✕</button>
+    </header>
+
+    <div id="lock" class="hidden">🔒 클릭 통과 중 — <b>Ctrl+Alt+L</b> 로 해제</div>
+
+    <main id="main">
+      <section id="pick">
+        <div id="tabs" role="tablist"></div>
+        <div id="pick-row">
+          <input id="search" type="text" placeholder="빌드 검색…" autocomplete="off" spellcheck="false" />
+          <select id="build"></select>
+        </div>
+      </section>
+
+      <section id="variants" class="hidden" aria-label="분기 선택"></section>
+
+      <section id="steps" aria-live="polite"></section>
+
+      <section id="raw" class="hidden">
+        <p class="warn">이 빌드는 스킬 순서를 자동으로 못 읽었어요 — 도감 본문을 그대로 보여드립니다.</p>
+        <pre id="raw-body"></pre>
+      </section>
+
+      <footer id="controls">
+        <label id="auto-label" title="턴 숫자를 읽어 자동으로 다음 단계로 (Ctrl+Alt+Space)">
+          <input type="checkbox" id="auto" /> <span>자동</span>
+        </label>
+        <button id="btn-prev" title="이전 단계 (Ctrl+Alt+←)">◀</button>
+        <button id="btn-next" title="다음 단계 (Ctrl+Alt+→)">▶</button>
+        <button id="btn-region" title="게임 화면에서 턴 숫자 위치를 지정 (Ctrl+Alt+R)">턴 영역</button>
+        <button id="btn-teach" title="지금 보이는 숫자를 인식기에 가르칩니다">가르치기</button>
+      </footer>
+
+      <p id="status">턴 영역을 아직 지정하지 않았어요.</p>
+
+      <section id="teach" class="hidden">
+        <div class="teach-head">
+          <span>지금 잡히는 화면입니다. <b>실제 턴 숫자</b>를 넣어주세요.</span>
+          <button id="teach-close" title="닫기">✕</button>
+        </div>
+        <canvas id="teach-view" width="200" height="60"></canvas>
+        <div class="teach-row">
+          <input id="teach-value" type="text" inputmode="numeric" placeholder="예: 16" maxlength="3" />
+          <button id="teach-save">가르치기</button>
+          <button id="teach-forget" class="ghost" title="가르친 것을 전부 지웁니다">초기화</button>
+        </div>
+        <p id="teach-msg"></p>
+      </section>
+
+      <section id="settings" class="hidden">
+        <div class="set-row">
+          <label for="opacity">배경</label>
+          <input id="opacity" type="range" min="20" max="100" value="88" />
+        </div>
+        <div class="set-row">
+          <label for="scale">글자</label>
+          <input id="scale" type="range" min="80" max="170" value="100" />
+        </div>
+        <div class="set-row">
+          <label for="tick">인식 주기</label>
+          <input id="tick" type="range" min="300" max="1500" step="100" value="600" />
+          <span id="tick-val">600ms</span>
+        </div>
+        <div class="set-row wrap">
+          <span class="muted" id="file-path">도감: —</span>
+        </div>
+        <div class="set-row">
+          <button id="btn-pick-file">도감 파일 선택</button>
+          <button id="btn-reveal" class="ghost">폴더 열기</button>
+        </div>
+        <p class="muted" id="diag"></p>
+        <p class="muted keys">
+          Ctrl+Alt+O 숨기기 · Ctrl+Alt+L 클릭통과 · Ctrl+Alt+R 턴영역 ·
+          Ctrl+Alt+←→ 단계이동 · Ctrl+Alt+Space 자동
+        </p>
+      </section>
+
+      <div id="empty" class="hidden"></div>
+    </main>
+  </div>
+
+  <video id="cap" muted playsinline></video>
+  <canvas id="crop"></canvas>
+  <script src="overlay.js"></script>
+</body>
+</html>

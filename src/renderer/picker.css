@@ -1,0 +1,64 @@
+/* 화면을 덮고 드래그로 영역을 받는 창. 게임 위에 뜨므로 최대한 가볍게. */
+
+* { margin: 0; padding: 0; box-sizing: border-box; }
+
+html, body {
+  width: 100%;
+  height: 100%;
+  overflow: hidden;
+  background: transparent;
+}
+
+body {
+  cursor: crosshair;
+  user-select: none;
+  -webkit-user-select: none;
+  font-family: 'Malgun Gothic', 'Noto Sans KR', system-ui, sans-serif;
+}
+
+#dim {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.38);
+}
+
+#guide {
+  position: fixed;
+  top: 26px;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 11px 20px;
+  border-radius: 12px;
+  background: rgba(16, 18, 26, 0.94);
+  color: #eef0f6;
+  font-size: 14px;
+  line-height: 1.65;
+  text-align: center;
+  pointer-events: none;
+}
+
+#guide b { color: #ffc65c; }
+#guide small { color: #9aa3b8; }
+
+#rect {
+  position: fixed;
+  display: none;
+  border: 2px solid #4ade80;
+  background: rgba(74, 222, 128, 0.14);
+  pointer-events: none;
+}
+
+#size {
+  position: absolute;
+  left: 0;
+  bottom: -22px;
+  padding: 1px 7px;
+  border-radius: 6px;
+  background: rgba(16, 18, 26, 0.94);
+  color: #4ade80;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+#size.small { color: #ff8a8a; }
