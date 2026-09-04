@@ -29,7 +29,7 @@ const state = {
   auto: false,
   /** @type {{displayId:number, fx:number, fy:number, fw:number, fh:number}|null} */
   region: null,
-  tickMs: 250,
+  tickMs: 100,
   /** 마지막으로 잘라 온 화면 — [가르치기]가 쓴다 */
   lastFrame: null,
   stats: null,
@@ -404,7 +404,7 @@ async function startCapture() {
   stopStream();
   // 화면을 통째로 받아 오는 일이라 초당 장수가 곧 시스템 부담이다.
   // 인식 주기에 맞춰 필요한 만큼만 받는다 (250ms 주기면 초당 5장).
-  const fps = Math.max(4, Math.min(15, Math.round(1000 / state.tickMs) + 1));
+  const fps = Math.max(4, Math.min(20, Math.round(1000 / state.tickMs) + 1));
   media = await navigator.mediaDevices.getUserMedia(/** @type {any} */ ({
     audio: false,
     video: {
@@ -494,25 +494,37 @@ async function tick() {
   }
 }
 
-/** 인식 상태를 사람 말로 — 안 될 때 뭘 해야 하는지까지 알려준다 */
+/** 인식 상태를 사람 말로 — 안 될 때 뭘 해야 하는지, 왜 안 움직이는지까지 알려준다 */
 function reportStatus(r) {
   if (r.turn === null) {
-    if (r.misses >= 8) {
+    if (r.hidden && r.hiddenMs >= 3000) {
       setStatus('숫자를 못 읽고 있어요 — [턴 영역]을 숫자에 딱 맞게 다시 잡거나 [가르치기]를 눌러보세요.', 'err');
     } else {
       setStatus('턴 숫자를 찾는 중…', '');
     }
     return;
   }
-  if (r.gap) {
-    setStatus(`턴 표시 없음 (연출 중) — ${r.turn}턴에서 대기`, '');
+  if (r.hidden) {
+    setStatus(
+      r.hiddenMs >= 8000
+        ? '한참 턴을 못 읽고 있어요 — 오버레이 창이 숫자를 가리진 않았는지 보세요.'
+        : `턴 표시 없음 (연출 중) — ${r.turn}턴에서 대기`,
+      r.hiddenMs >= 8000 ? 'err' : '',
+    );
     return;
   }
-  if (r.misses >= 20) {
-    setStatus('한참 턴을 못 읽고 있어요 — 오버레이 창이 숫자를 가리진 않았는지 보세요.', 'err');
-    return;
-  }
-  setStatus(`인식 중 — ${r.turn}턴${r.snapped ? ' (빌드 턴에 맞춤)' : ''}`, 'on');
+  // 추적기가 일부러 안 움직이는 중이면 그 이유를 보여준다 — "왜 안 넘어가지?"를 없애려고
+  const waiting = {
+    'jump-wait': '크게 건너뛰는 중인지 확인 중',
+    'reset-wait': '다음 라운드인지 확인 중',
+    'restart-wait': '재시작인지 확인 중',
+    pushback: '턴이 뒤로 밀림 — 단계 유지',
+    hold: '엉뚱한 숫자 — 단계 유지',
+  }[r.why];
+  setStatus(
+    `인식 중 — ${r.turn}턴${r.snapped ? ' (빌드 턴에 맞춤)' : ''}${waiting ? ` · ${waiting}` : ''}`,
+    'on',
+  );
 }
 
 async function toggleAuto(on) {
@@ -717,7 +729,7 @@ window.addEventListener('beforeunload', stopCapture);
 (async () => {
   const config = await api.config.get();
   state.region = config.turnRegion || null;
-  state.tickMs = config.tickMs || 250;
+  state.tickMs = config.tickMs || 100;
 
   $('opacity').value = String(config.opacity ?? 88);
   applyOpacity(config.opacity ?? 88);

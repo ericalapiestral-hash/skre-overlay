@@ -116,15 +116,28 @@ test('턴이 올라가면 따라 올라간다', { skip: !loadFixtures() }, () =>
 });
 
 test('아무것도 없는 화면에서는 자리를 지킨다', () => {
-  const e = engine();
+  let t = 0;
+  const e = createEngine({ templates: TEMPLATES, now: () => t });
+  e.setFlow(GROUPS, {});
   e.setIndex(1);
   const blank = new Uint8Array(80 * 40).fill(28);
   for (let i = 0; i < 5; i += 1) {
+    t += 100;
     const r = e.feed(blank, 80, 40);
     assert.strictEqual(r.index, 1, '못 읽었다고 위치를 잃으면 안 된다');
     assert.strictEqual(r.turn, null);
+    assert.strictEqual(r.hidden, true);
   }
-  assert.strictEqual(e.feed(blank, 80, 40).gap, true, '한동안 못 읽으면 연출 중으로 본다');
+  t += 100;
+  assert.ok(e.feed(blank, 80, 40).hiddenMs >= 500, '얼마나 가려졌는지 잰다');
+});
+
+test('프레임 시각을 직접 넣을 수 있다 (시나리오 시험용)', () => {
+  const e = createEngine({ templates: TEMPLATES });
+  e.setFlow(GROUPS, {});
+  const blank = new Uint8Array(80 * 40).fill(28);
+  assert.strictEqual(e.feed(blank, 80, 40, 1000).hiddenMs, 0);
+  assert.strictEqual(e.feed(blank, 80, 40, 1700).hiddenMs, 700);
 });
 
 test('가르친 대조표를 더하면 개수가 늘어난다', () => {
