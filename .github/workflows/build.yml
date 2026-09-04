@@ -32,6 +32,22 @@ jobs:
       # 앱이 진짜로 뜨는지 보는 테스트는 화면이 필요하다 (test/smoke.test.js)
       - run: sudo apt-get update && sudo apt-get install -y xvfb
       - run: npm run check
+      # ★ **건너뛴 테스트가 있으면 실패로 친다.**
+      #
+      # 여기 테스트들은 조건이 안 맞으면 스스로 건너뛴다 — 화면이 없으면 부팅 테스트가,
+      # 표본 파일이 없으면 인식기 테스트가. 그건 사람이 직접 돌릴 때는 옳지만, CI에서는
+      # **초록불인데 아무것도 안 본 상태**가 된다. 검사를 못 했으면 못 했다고 해야 한다.
+      - name: 건너뛴 테스트가 없는지
+        run: |
+          set -e
+          npm test 2>&1 | tee out.txt
+          n=$(grep -oP '^# skipped \K\d+' out.txt || echo 0)
+          echo "건너뜀 $n개"
+          if [ "$n" != "0" ]; then
+            echo "::error::테스트 $n개가 건너뛰어졌다 — CI에서는 전부 돌아야 한다"
+            grep -E '# SKIP' out.txt || true
+            exit 1
+          fi
 
   build-windows:
     needs: test
