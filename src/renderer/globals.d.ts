@@ -29,6 +29,11 @@ interface OverlayApi {
     teach(gray: Uint8Array, w: number, h: number, value: string): Promise<any>;
     forget(): Promise<boolean>;
   };
+  diag: {
+    state(): Promise<{ frames: number; samples: number; spanMs: number }>;
+    save(): Promise<{ ok: boolean; error?: string; file?: string; frames?: number; samples?: number; spanMs?: number }>;
+    reveal(file: string): Promise<boolean>;
+  };
   win: {
     collapse(on: boolean): void;
     clickThrough(on: boolean): void;

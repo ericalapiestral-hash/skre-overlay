@@ -184,11 +184,12 @@ tesseract는 **없앴다.** 76MB와 첫 실행 1분 다운로드, asar·워커 �
 ```bash
 npm install
 npm start          # 실행
-npm test           # 단위 + 전투 시나리오 + 부팅 스모크 (168개)
+npm test           # 단위 + 전투 시나리오 + 부팅 스모크 (176개)
 npm run typecheck  # JSDoc 기반 타입 검사 (빌드 단계 없음)
 npm run check      # typecheck + test
 npm run doctor     # 도감을 어디서 찾았고 몇 개 읽었는지 (화면 없이)
 npm run bench      # 숫자 인식기 정확도
+node tools/replay.js <기록.json>   # 실제 전투 기록 되돌려 보기
 npm run templates  # 대조표 다시 뽑기 (그 컴퓨터의 폰트가 더해진다)
 npm run fixtures   # 성능 표본 다시 만들기
 npm run dist       # 포터블 exe
@@ -203,6 +204,7 @@ src/
     catalog.js  builds.json 찾기 · 읽기 · 감시
     engine.js   픽셀 한 장 → 지금 몇 번째 단계인지 (읽기 → 따라가기)
     config.js   설정 저장 (임시파일 → rename)
+    recorder.js 전투 기록 — 실제 게임에서 벌어진 일을 시나리오로 뽑아낸다
   shared/       화면도 캡처도 모르는 순수 로직
     turnReader.js 숫자 인식기
     follower.js   턴 추적기 — 연출·밀림·재시작을 견디며 단계를 따라간다
@@ -211,9 +213,39 @@ src/
     templates.json
   preload/      contextBridge 통로
   renderer/     화면 (overlay · picker)
-tools/          make-templates · make-fixtures · bench-reader · tune-reader
+tools/          make-templates · make-fixtures · bench-reader · tune-reader · replay
 test/           단위 테스트 + fixtures/digits.json.gz + scenarios/*.json (전투 시나리오)
 ```
+
+### 실제 게임에서 벌어진 일을 여기로 가져온다 (`src/main/recorder.js`)
+
+**시나리오 82개는 전부 상상해서 적은 것이다.** 진짜 전투에서 어떤 숫자가 실제로
+읽혔는지는 이 저장소 안에서 알 방법이 없다 — 여기엔 게임도, 게임 폰트도, 윈도우도 없다.
+그래서 "여기서 안 넘어갔어"라는 얘기를 들어도 재현할 수가 없었다. 그 구멍을 메우는 길이다.
+
+자동 인식이 도는 동안 프레임을 고리 버퍼에 늘 담아 두고(10분치), 설정의
+**[전투 기록 저장]** 을 누르면 바탕화면에 JSON 한 장이 나온다. 그 파일로 두 가지를 한다.
+
+```bash
+node tools/replay.js ~/바탕화면/skre-기록-20260904-1530.json
+node tools/replay.js 기록.json --from 120 --to 180        # 구간만
+node tools/replay.js 기록.json --scenario "이름" > test/scenarios/real-01.json
+```
+
+- **추적기 재생** — 프레임마다 단계가 어떻게 움직였는지 궤적을 보여준다. 단계가 바뀐 줄에
+  `◆`, 그때의 화면과 다르면 `(그때는 N)`. "왜 안 넘어갔지"를 프레임 번호로 찾는 도구다.
+- **인식기 다시 재기** — 기록에 담긴 크롭 표본을 지금 인식기에 다시 넣는다. `npm run bench`의
+  표본 792장은 **우리가 고른 폰트**로 그린 것이라, 게임 폰트에서 어떤지는 이 표본으로만 안다.
+
+시작 버튼을 따로 두지 않은 이유: 이상한 걸 본 사람은 **그 일이 벌어진 뒤에** 누른다.
+표본은 종류별로 상한을 둔다(못 읽음 40 · 흐림 40 · 값당 4) — 잘 읽힌 프레임만 잔뜩 모으면
+정작 알고 싶은 "왜 못 읽었나"가 한 장도 안 남기 때문이다. 빌드를 바꾸면 기록을 새로
+시작한다(다른 빌드의 프레임이 섞이면 되돌려 볼 수 없다).
+
+기록 파일은 **시나리오와 같은 형식**이라 `test/scenarios/`에 그대로 넣을 수 있다. 다만
+실제 캡처는 100ms에 딱 맞춰 오지 않으므로 프레임마다 `t`(ms)를 들고 오고, 시나리오
+러너가 그걸 본다. `test/recorder.test.js`가 한 바퀴를 통째로 잠근다 — 엔진에 넣고 →
+기록하고 → 재생해서 **처음 엔진이 낸 결론과 같은지**. 여기가 어긋나면 기록을 받아도 쓸모없다.
 
 ### 앱이 진짜로 뜨는지 (`test/smoke.test.js`)
 

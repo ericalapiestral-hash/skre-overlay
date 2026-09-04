@@ -725,6 +725,21 @@ $('btn-pick-file').addEventListener('click', async () => {
 });
 $('btn-reveal').addEventListener('click', () => api.catalog.reveal());
 
+// 전투 기록 저장 — 이상한 걸 본 **뒤에** 누르는 버튼이다. 기록은 자동이 도는 동안
+// 늘 담기고 있으므로 미리 켜 둘 필요가 없다 (src/main/recorder.js 참고).
+$('btn-record').addEventListener('click', async () => {
+  const msg = $('record-msg');
+  msg.textContent = '저장 중…';
+  const r = await api.diag.save();
+  if (!r.ok) {
+    msg.textContent = r.error;
+    return;
+  }
+  const secs = Math.round(r.spanMs / 1000);
+  msg.textContent = `바탕화면에 저장했어요 (${secs}초 · 표본 ${r.samples}장)`;
+  api.diag.reveal(r.file);
+});
+
 $('btn-collapse').addEventListener('click', () => {
   const collapsed = document.body.classList.toggle('collapsed');
   $('btn-collapse').textContent = collapsed ? '▸' : '▾';

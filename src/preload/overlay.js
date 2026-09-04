@@ -46,6 +46,12 @@ contextBridge.exposeInMainWorld('overlay', {
     teach: (gray, w, h, value) => ipcRenderer.invoke('engine:teach', gray, w, h, value),
     forget: () => ipcRenderer.invoke('engine:forget'),
   },
+  /** 전투 기록 — 실제 게임에서 벌어진 일을 시나리오로 뽑아낸다 */
+  diag: {
+    state: () => ipcRenderer.invoke('diag:state'),
+    save: () => ipcRenderer.invoke('diag:save'),
+    reveal: (file) => ipcRenderer.invoke('diag:reveal', file),
+  },
   win: {
     collapse: (on_) => ipcRenderer.send('overlay:collapse', on_),
     clickThrough: (on_) => ipcRenderer.send('overlay:click-through', on_),

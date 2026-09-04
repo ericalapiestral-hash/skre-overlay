@@ -19,6 +19,7 @@ const {
 const { createStore } = require('./config');
 const { resolvePath, loadCatalog, watchCatalog, candidatePaths } = require('./catalog');
 const { createEngine } = require('./engine');
+const { createRecorder } = require('./recorder');
 const {
   loadTemplates,
   binarize,
@@ -51,6 +52,8 @@ let expandedHeight = null;
 
 let store = null;
 let engine = null;
+/** 전투 기록 — 자동이 도는 동안 늘 담아 둔다 (src/main/recorder.js 의 "왜 필요한가") */
+let recorder = null;
 /** 마지막으로 읽은 도감 — 본문과 단계 자료는 여기 남고 화면으로는 안 나간다 */
 let catalog = null;
 
@@ -379,17 +382,66 @@ function registerIpc() {
   // 화면은 빌드 id만 보낸다 — 단계 자료는 여기 있는 것을 쓴다
   ipcMain.handle('engine:flow', (_e, buildId, picks, opts) => {
     const build = buildById(buildId);
-    return engine.setFlow(build ? build.groups : [], picks, opts);
+    const r = engine.setFlow(build ? build.groups : [], picks, opts);
+    recorder.setFlow(engine.flow, { build: build ? build.name : '', buildId, picks });
+    return r;
   });
-  ipcMain.handle('engine:index', (_e, i) => engine.setIndex(i));
+  ipcMain.handle('engine:index', (_e, i) => {
+    const index = engine.setIndex(i);
+    recorder.manual(index);
+    return index;
+  });
   ipcMain.handle('engine:reset', () => {
     engine.reset();
+    recorder.note('자동 껐다 켬');
     return true;
   });
   // 구조적 복제로 이미 Uint8Array가 넘어온다 — 한 번 더 복사하면 프레임마다 헛일이다
-  ipcMain.handle('engine:feed', (_e, buf, w, h) =>
-    engine.feed(buf instanceof Uint8Array ? buf : new Uint8Array(buf), w, h),
-  );
+  ipcMain.handle('engine:feed', (_e, buf, w, h) => {
+    const gray = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    const r = engine.feed(gray, w, h);
+    recorder.frame(r, { gray, w, h });
+    return r;
+  });
+
+  ipcMain.handle('diag:state', () => ({
+    frames: recorder.frameCount,
+    samples: recorder.sampleCount,
+    spanMs: recorder.spanMs,
+  }));
+
+  /**
+   * 전투 기록 저장 — 바탕화면에 JSON 한 장.
+   *
+   * 바탕화면에 두는 이유: 이 파일은 사람이 찾아서 보내 줘야 쓸모가 있다.
+   * userData 안에 두면 경로를 설명하는 것부터 일이다.
+   */
+  ipcMain.handle('diag:save', () => {
+    if (!recorder.frameCount) return { ok: false, error: '기록된 프레임이 없어요. 자동을 켜고 잠시 둔 뒤 눌러 주세요.' };
+    const stamp = new Date()
+      .toLocaleString('sv-SE')
+      .replace(/[-: ]/g, '')
+      .slice(0, 13);
+    const dir = app.getPath('desktop');
+    const file = path.join(dir, `skre-기록-${stamp}.json`);
+    try {
+      fs.writeFileSync(file, JSON.stringify(recorder.dump(), null, 1));
+    } catch (e) {
+      return { ok: false, error: `저장 실패: ${e instanceof Error ? e.message : String(e)}` };
+    }
+    return {
+      ok: true,
+      file,
+      frames: recorder.frameCount,
+      samples: recorder.sampleCount,
+      spanMs: recorder.spanMs,
+    };
+  });
+
+  ipcMain.handle('diag:reveal', (_e, file) => {
+    if (file) shell.showItemInFolder(file);
+    return true;
+  });
 
   /**
    * 숫자 가르치기 — 실제 게임 화면에서 뽑은 모양을 대조표에 넣는다.
@@ -583,6 +635,7 @@ if (!DOCTOR && !app.requestSingleInstanceLock()) {
   app.whenReady().then(() => {
     store = createStore(app.getPath('userData'));
     engine = createEngine({ templates: BUILTIN });
+    recorder = createRecorder();
     engine.setTemplates(BUILTIN, store.load().userTemplates || []);
 
     if (DOCTOR) {

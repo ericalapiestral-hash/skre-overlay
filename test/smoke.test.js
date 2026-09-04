@@ -97,6 +97,7 @@ test('앱이 실제로 뜨고 화면·프리로드·IPC가 이어진다', { skip
     'capture',
     'catalog',
     'config',
+    'diag',
     'engine',
     'keys',
     'region',
