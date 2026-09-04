@@ -19,7 +19,7 @@ for (const minScore of [0.6, 0.65, 0.7, 0.75]) {
     for (const holeY of [0.4, 0.55, 0.7]) {
       for (const splitCost of [0.02, 0.04]) {
         const read = { minScore, minMargin, match: { ...MATCH, holeY, splitCost } };
-        const r = bench({ useCandidates: true, read });
+        const r = bench({ read });
         if (!r) {
           console.log('표본이 없어요. npm run fixtures 로 만들어주세요.');
           process.exit(1);

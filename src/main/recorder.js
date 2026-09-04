@@ -36,7 +36,7 @@ const SAMPLE_CAPS = {
 const MAX_SAMPLE_BYTES = 6 * 1024 * 1024;
 
 /**
- * @typedef {{t: number, v: number|null, c?: number, snapped?: boolean,
+ * @typedef {{t: number, v: number|null, c?: number,
  *            i: number, why: string, set?: number, note?: string}} Frame
  * @typedef {{t: number, w: number, h: number, gray: string, kind: string,
  *            read: number|null, conf: number}} Sample
@@ -87,7 +87,7 @@ function createRecorder(options = {}) {
    * 프레임 하나. gray를 같이 주면 표본으로 담길 수도 있다.
    *
    * @param {{raw: number|null, confidence: number, index: number, why: string,
-   *          snapped?: boolean}} r 엔진이 돌려준 결과
+   *          }} r 엔진이 돌려준 결과
    * @param {{gray?: Uint8Array, w?: number, h?: number, strongScore?: number,
    *          now?: number}} [frameData]
    */
@@ -96,7 +96,6 @@ function createRecorder(options = {}) {
     /** @type {Frame} */
     const f = { t, v: r.raw, i: r.index, why: r.why };
     if (r.raw !== null) f.c = Math.round(r.confidence * 1000) / 1000;
-    if (r.snapped) f.snapped = true;
     pushFrame(f);
 
     const { gray, w, h, strongScore = 0.86 } = frameData;

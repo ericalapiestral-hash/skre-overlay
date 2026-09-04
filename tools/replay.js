@@ -19,13 +19,12 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createFollower } = require('../src/shared/follower');
 const { readTurn, loadTemplates, CROP_TARGET_HEIGHT } = require('../src/shared/turnReader');
-const { knownTurns } = require('../src/shared/tracker');
 
 /** 기록 프레임 → 추적기가 받는 읽기 */
 function toReading(f) {
   if (!f || typeof f.set === 'number' || f.why === 'note') return null;
   if (f.v === null || f.v === undefined) return null;
-  return { value: f.v, confidence: f.c ?? 0.95, snapped: Boolean(f.snapped) };
+  return { value: f.v, confidence: f.c ?? 0.95 };
 }
 
 /** 추적기를 처음부터 다시 돌려 궤적을 만든다 */
@@ -81,11 +80,10 @@ function dump(trace, steps) {
 /** 기록 안의 크롭 표본을 지금 인식기에 다시 넣어 본다 */
 function recheck(rec) {
   const templates = loadTemplates(require('../src/shared/templates.json'));
-  const turns = knownTurns(rec.steps || []);
   const rows = [];
   for (const s of rec.samples || []) {
     const gray = new Uint8Array(Buffer.from(s.gray, 'base64'));
-    const now = readTurn(gray, s.w, s.h, templates, { candidates: turns });
+    const now = readTurn(gray, s.w, s.h, templates);
     rows.push({
       t: s.t,
       kind: s.kind,

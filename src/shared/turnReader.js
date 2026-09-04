@@ -24,7 +24,7 @@
 //    쓰레기가 거의 없다.
 //
 //   const templates = loadTemplates(require('./templates.json'));
-//   const got = readTurn(gray, w, h, templates, { candidates: [0, 4, 8] });
+//   const got = readTurn(gray, w, h, templates);
 'use strict';
 
 /**
@@ -270,6 +270,16 @@ function looksLikeSlash(box, imgW) {
 const MERGED_RATIO = 0.9;
 
 /**
+ * ⚠ **어느 명암이 진짜 글자인지 "크기"나 "포함 관계"로 가르려 하지 말 것.** 두 번 해 보고
+ * 두 번 다 오독이 0.3% → **14.4%** 로 뛰었다.
+ *  · 높이로: 뒤집힌 쪽에서 잡히는 배경 조각이 글자보다 커서 그쪽이 이긴다.
+ *  · 포함 관계로: 구멍은 글자에 **들어가지만** 배경은 글자를 **감싼다**. 방향이 반대라
+ *    한쪽만 보면 배경이 이긴다.
+ * 지금은 "자릿수를 더 많이 찾은 쪽이 이긴다"만 쓴다 (아래 readTurn). 표본 792장에서
+ * 남는 오독은 2장뿐이고(44px "8"이 구멍 둘로 잡혀 551), 그걸 잡으려다 50배를 잃었다.
+ */
+
+/**
  * 덩어리에서 가로 [x0, x1) 구간만 떼어 낸다 (x는 덩어리 왼쪽 기준).
  * @returns {Box|null} 남는 게 거의 없으면 null
  */
@@ -428,6 +438,7 @@ function digitBoxes(comps, imageH, maxDigits = 3, opts = {}) {
     out.lineCount = line.length;
     // 두 글자가 붙은 덩어리가 있나 — 슬래시가 옆 숫자에 붙었을 수 있다는 신호다
     out.merged = imgW > 0 && line.some((c) => c.w / c.h > MERGED_RATIO);
+
   }
 
   // ★ "16 / 70" 에서 슬래시 앞까지만 남긴다 — 오른쪽은 최대 턴이라 우리가 읽을 것이 아니다.
@@ -799,14 +810,33 @@ function scoreGrid(grid, templates, params = MATCH) {
  *
  * @param {number[][]} scores 자리별 0~9 점수
  * @param {{minScore?: number, minMargin?: number, strictMargin?: number,
- *          candidates?: number[]}} opts
- *   candidates 이 빌드에 실제로 나오는 턴 숫자들. 애매한 자리를 여기에 맞춘다.
+ *          }} opts
  *   strictMargin 후보에 없는 숫자를 그래도 믿어 주려면 필요한 차이 (기본 minMargin×3)
- * @returns {{value:number, digits:number[], confidence:number, margin:number, snapped:boolean}|null}
+ * @returns {{value:number, digits:number[], confidence:number, margin:number}|null}
+ */
+/**
+ * 자리마다의 점수표에서 값 하나를 고른다. 확신이 모자라면 **아무것도 안 고른다.**
+ *
+ * ★ **빌드에 나오는 턴을 "후보"로 써서 맞추던 기능은 걷어냈다. 되살리지 말 것.**
+ *
+ * 게임의 턴 표시는 1씩 올라가는 카운터라(`16 / 70`) 화면에 뜨는 값 대부분이
+ * 빌드 단계의 턴이 **아니다.** 그런데 후보에 맞추는 코드는 "읽은 값이 빌드 턴일 것"을
+ * 전제하고 있어서, 18을 28로, 20을 16으로, 9를 0으로 **자신 있게 바꿔 놓았다.**
+ * 실제 게임에서 "18턴을 28턴으로 읽는다"는 얘기가 나온 원인이 이것이다.
+ *
+ * 표본 792장을 실제와 같은 조건(빌드 턴 다섯 개만 후보로)에서 재 본 결과:
+ *
+ *   후보 없음                    틀림 2장 (0.3%)
+ *   또렷하면 후보 무시 (절충)     틀림 20장 (2.5%)
+ *   후보에 맞춤 (예전 방식)       틀림 67장 (8.5%)   ← 전부 "후보로 맞춤"이 만든 오독
+ *
+ * 예전 벤치가 이걸 못 잡은 이유: **표본의 정답을 전부 후보로 넣고 쟀다.** 그러면
+ * "빌드 턴이 아닌 턴"을 읽는 상황이 한 번도 시험되지 않는다 — 앱이 겪는 것과 다른
+ * 것을 잰 것이다. 벤치가 예전에 저지른 실수(원본 크기로 재기)와 같은 종류다.
  */
 function bestValue(scores, opts = {}) {
   // 문턱값은 재서 골랐다 (tools/bench-reader.js · tools/tune-reader.js).
-  // 실제 폰트 792장에서 맞음 98.6% · 모르겠음 0.5% · 틀림 0.9%.
+  // 표본 792장에서 맞음 99.7% · 틀림 0.3%.
   // 더 올리면 "모르겠음"만 급격히 늘고 틀림은 거의 안 줄어든다.
   const minScore = opts.minScore ?? 0.7;
   const minMargin = opts.minMargin ?? 0.04;
@@ -836,60 +866,8 @@ function bestValue(scores, opts = {}) {
   }
 
   const raw = Number(digits.join(''));
-  const clear = confidence >= minScore && margin >= minMargin;
-
-  // 이 빌드에 실제로 나오는 턴 — 게임이 보여줄 수 있는 숫자를 이미 아는데 안 쓰면 아깝다.
-  const candidates = (opts.candidates || []).filter(
-    (c) => Number.isInteger(c) && c >= 0 && String(c).length === scores.length,
-  );
-
-  if (candidates.length === 0) {
-    return clear ? { value: raw, digits, confidence, margin, snapped: false } : null;
-  }
-
-  // 후보가 있으면 **후보 안에서** 1등과 2등을 다시 가른다.
-  //
-  // 예전엔 "후보에 있으니 맞겠지" 하고 확신 없는 읽기를 그대로 통과시켰다.
-  // 한 자리 숫자에서는 0·4·7·8·9가 전부 후보라 8을 0으로 읽고도 자신 있게
-  // 넘어갔다 — 오독의 제일 큰 원인이었다. 후보 안이라고 확실해지지는 않는다.
-  let top = null;
-  let runnerUpTotal = 0;
-  for (const value of candidates) {
-    const ds = String(value).split('').map(Number);
-    let sum = 0;
-    let worst = 1;
-    for (let i = 0; i < ds.length; i += 1) {
-      const s = scores[i][ds[i]];
-      sum += s;
-      if (s < worst) worst = s;
-    }
-    if (!top || sum > top.total) {
-      if (top) runnerUpTotal = top.total;
-      top = { value, digits: ds, total: sum, confidence: worst };
-    } else if (sum > runnerUpTotal) {
-      runnerUpTotal = sum;
-    }
-  }
-
-  if (top) {
-    const gap = candidates.length > 1 ? (top.total - runnerUpTotal) / scores.length : 1;
-    if (top.confidence >= minScore && gap >= minMargin) {
-      return {
-        value: top.value,
-        digits: top.digits,
-        confidence: top.confidence,
-        margin: gap,
-        snapped: top.value !== raw,
-      };
-    }
-  }
-
-  // 후보 중에는 마땅한 게 없는데 원본은 아주 확실하다 — 빌드에 없는 턴이 화면에
-  // 뜨는 경우도 있으니 길을 완전히 막지는 않는다. 대신 문턱을 훨씬 높인다.
-  if (clear && margin >= (opts.strictMargin ?? minMargin * 3)) {
-    return { value: raw, digits, confidence, margin, snapped: false };
-  }
-  return null;
+  if (confidence < minScore || margin < minMargin) return null;
+  return { value: raw, digits, confidence, margin };
 }
 
 /**
@@ -951,9 +929,9 @@ function expandBox(box, w, templates, maxDigits, params = MATCH) {
  *
  * @param {Uint8Array} gray 회색조 픽셀 (길이 w*h)
  * @param {{minScore?:number, minMargin?:number, maxDigits?:number,
- *          candidates?:number[], match?:object, thresholdOffsets?:number[]}} [opts]
+ *          match?:object, thresholdOffsets?:number[]}} [opts]
  * @returns {{value:number, confidence:number, margin:number, digits:number[],
- *            bright:boolean, threshold:number, snapped:boolean, boxes:number}|null}
+ *            bright:boolean, threshold:number, boxes:number}|null}
  */
 function readTurn(gray, w, h, templates, opts = {}) {
   if (!gray || w <= 0 || h <= 0 || !templates || templates.length === 0) return null;
@@ -1011,7 +989,13 @@ function readTurn(gray, w, h, templates, opts = {}) {
       const got = bestValue(scores, opts);
       if (!got) continue;
 
-      const ranked = { ...got, bright, threshold, boxes: boxes.length, segs: seg.lineCount };
+      const ranked = {
+        ...got,
+        bright,
+        threshold,
+        boxes: boxes.length,
+        segs: seg.lineCount,
+      };
 
       // ★ 자릿수를 더 많이 찾은 쪽이 이긴다.
       //

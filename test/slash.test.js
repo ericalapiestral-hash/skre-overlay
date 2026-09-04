@@ -36,10 +36,10 @@ function templatesFor(font) {
  * 이미지 높이(s.h)에는 여백이 들어 있어서 그걸로 계산하면 확대가 거의 안 되고,
  * 확대 없이 읽으면 정확도가 눈에 띄게 떨어진다 (bench의 "확대 없이" 줄 참고).
  */
-function read(s, candidates) {
+function read(s) {
   const gray = new Uint8Array(Buffer.from(s.gray, 'base64'));
   const big = upscale(gray, s.w, s.h, Math.max(1, Math.min(8, CROP_TARGET_HEIGHT / s.height)));
-  return readTurn(big.gray, big.w, big.h, templatesFor(s.font), candidates ? { candidates } : {});
+  return readTurn(big.gray, big.w, big.h, templatesFor(s.font));
 }
 
 test('표본이 있다', { skip }, () => {
@@ -73,15 +73,17 @@ test('"N / M"에서 왼쪽 숫자만 읽는다', { skip }, () => {
   );
 });
 
-test('빌드 턴을 후보로 주면 더 잘 읽는다', { skip }, () => {
-  // 실제 앱은 늘 후보를 넘긴다. 후보가 있을 때 나빠지면 안 된다.
-  const turns = [0, 4, 8, 12, 16, 30];
-  const usable = pairs.filter((s) => turns.includes(s.value));
-  const wrong = usable.filter((s) => {
-    const r = read(s, turns);
+test('빌드 턴이 아닌 턴도 그대로 읽는다', { skip }, () => {
+  // ★ 실제 게임의 턴은 1씩 올라가므로 화면에 뜨는 값 대부분이 빌드 턴이 아니다.
+  // 예전에는 빌드 턴을 "후보"로 넘겨 거기에 맞췄고, 그래서 18이 28로 읽혔다.
+  const buildTurns = new Set([0, 4, 8, 12, 16]);
+  const others = pairs.filter((s) => !buildTurns.has(s.value));
+  assert.ok(others.length > 100, '빌드 턴이 아닌 표본이 넉넉해야 한다');
+  const wrong = others.filter((s) => {
+    const r = read(s);
     return r && r.value !== s.value;
   });
-  assert.strictEqual(wrong.length, 0, `후보를 줬는데 ${wrong.length}장이 틀렸다`);
+  assert.strictEqual(wrong.length, 0, `빌드 턴이 아닌 ${wrong.length}장이 틀렸다`);
 });
 
 test('슬래시를 재는 값은 숫자와 겹치지 않는다', { skip: !data ? '표본이 없다' : false }, () => {

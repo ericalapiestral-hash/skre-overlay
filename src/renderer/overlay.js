@@ -548,7 +548,7 @@ function reportStatus(r) {
     hold: '엉뚱한 숫자 — 단계 유지',
   }[r.why];
   setStatus(
-    `인식 중 — ${r.turn}턴${r.snapped ? ' (빌드 턴에 맞춤)' : ''}${waiting ? ` · ${waiting}` : ''}`,
+    `인식 중 — ${r.turn}턴${waiting ? ` · ${waiting}` : ''}`,
     'on',
   );
 }

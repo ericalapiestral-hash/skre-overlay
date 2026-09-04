@@ -12,12 +12,11 @@
 const { readTurn, loadTemplates } = require('../shared/turnReader');
 const { createFollower } = require('../shared/follower');
 const { flatten } = require('../shared/steps');
-const { knownTurns } = require('../shared/tracker');
 
 /**
  * @typedef {{turn: number, label: string}} FlowStep
  * @typedef {{index: number, moved: boolean, turn: number|null, raw: number|null,
- *            confidence: number, snapped: boolean, hidden: boolean, hiddenMs: number,
+ *            confidence: number, hidden: boolean, hiddenMs: number,
  *            why: string}} FeedResult
  */
 
@@ -31,8 +30,6 @@ function createEngine(options = {}) {
 
   /** @type {FlowStep[]} */
   let flow = [];
-  /** flow에 나오는 턴 숫자 — 프레임마다 다시 만들지 않으려고 캐시한다 */
-  let turns = [];
   let follower = createFollower([], followerOptions);
   let active = templates;
 
@@ -59,7 +56,6 @@ function createEngine(options = {}) {
     const steps = flatten(Array.isArray(groups) ? groups : [], picks || {});
     const index = keepIndex ? Math.max(0, Math.min(follower.index, steps.length - 1)) : 0;
     flow = steps;
-    turns = knownTurns(flow);
     follower = createFollower(flow, { ...followerOptions, index: steps.length ? index : 0 });
     return { steps, index: follower.index };
   }
@@ -82,9 +78,9 @@ function createEngine(options = {}) {
    * @returns {FeedResult}
    */
   function feed(gray, w, h, now = clock()) {
-    // 이 빌드에 나오는 턴 숫자 — 게임이 보여줄 수 있는 숫자를 이미 아는데 안 쓰면 아깝다.
-    // 애매하게 읽힌 자리를 여기에 맞추고, 여기 없는 숫자를 확신하면 한 번 더 의심한다.
-    const got = readTurn(gray, w, h, active, { candidates: turns });
+    // 빌드 턴을 "후보"로 넘기지 않는다 — 턴 카운터는 1씩 올라가서 화면에 뜨는 값
+    // 대부분이 빌드 턴이 아니고, 맞추려 들면 18을 28로 바꿔 놓는다 (turnReader의 bestValue).
+    const got = readTurn(gray, w, h, active);
     const r = follower.push(got, now);
     return {
       index: r.index,
@@ -92,7 +88,6 @@ function createEngine(options = {}) {
       turn: r.turn,
       raw: got ? got.value : null,
       confidence: got ? got.confidence : 0,
-      snapped: Boolean(got && got.snapped),
       hidden: r.hidden,
       hiddenMs: r.hiddenMs,
       why: r.why,

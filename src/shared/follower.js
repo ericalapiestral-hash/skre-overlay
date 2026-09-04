@@ -56,7 +56,7 @@ const DEFAULTS = {
 
 /**
  * @typedef {{turn: number, label: string}} Step
- * @typedef {{value: number, confidence?: number, snapped?: boolean}} Reading
+ * @typedef {{value: number, confidence?: number}} Reading
  * @typedef {{index: number, moved: boolean, turn: number|null, raw: number|null,
  *            hidden: boolean, hiddenMs: number, why: string}} FollowResult
  */
@@ -198,7 +198,7 @@ function createFollower(steps, options = {}) {
     if (run && run.value === v) run.frames += 1;
     else run = { value: v, frames: 1 };
 
-    const strong = (reading.confidence ?? 0) >= cfg.strongScore && !reading.snapped;
+    const strong = (reading.confidence ?? 0) >= cfg.strongScore;
     if (!strong && run.frames < 2) {
       // 받아들이지 않은 흐린 읽기는 "이 프레임엔 못 읽었다"와 같으므로 가려짐처럼 이어짐을 끊는다.
       // 또렷한 오독 사이에 흐린 프레임이 끼어 있다는 것 자체가 깜빡인다는 증거다 —

@@ -25,7 +25,7 @@ function run(scenario) {
     let reading = null;
     if (typeof frame === 'number') reading = { value: frame, confidence: 0.95 };
     else if (frame && typeof frame === 'object' && frame.v !== null && frame.v !== undefined) {
-      reading = { value: frame.v, confidence: frame.weak ? 0.75 : 0.95, snapped: Boolean(frame.snapped) };
+      reading = { value: frame.v, confidence: frame.weak ? 0.75 : 0.95 };
     }
     const r = follower.push(reading, at);
     trace.push({ i, frame, index: r.index, why: r.why, turn: r.turn });

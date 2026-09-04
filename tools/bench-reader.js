@@ -96,7 +96,7 @@ function byDigit() {
 /**
  * 성능을 잰다.
  *
- * @param {{holdout?: boolean, useCandidates?: boolean, read?: object, target?: number,
+ * @param {{holdout?: boolean, read?: object, target?: number,
  *          fonts?: string[], heights?: number[], verbose?: boolean}} [opts]
  *   holdout 표본을 그린 폰트의 대조표를 빼고 맞춘다 (기본 true = 처음 보는 폰트 조건)
  *   target  앱처럼 이 높이 근처로 키워서 읽는다 (0이면 원본 크기 그대로)
@@ -114,9 +114,6 @@ function bench(opts = {}) {
       (!opts.heights || opts.heights.includes(s.height)) &&
       (!opts.fonts || opts.fonts.includes(s.font)),
   );
-  // 실제 앱은 빌드에 나오는 턴만 후보로 넘긴다 — 그 조건도 잴 수 있게
-  const values = [...new Set(data.samples.map((s) => s.value))].sort((a, b) => a - b);
-  const candidates = opts.useCandidates ? values : undefined;
 
   // 폰트마다 대조표를 한 번만 만든다 (표본마다 만들면 몇 분씩 걸린다)
   const byFont = new Map();
@@ -147,10 +144,7 @@ function bench(opts = {}) {
       target ? Math.max(1, Math.min(8, target / s0.height)) : 1,
     );
     for (let i = 0; i < 20; i += 1) {
-      readTurn(warm.gray, warm.w, warm.h, templatesFor(s0.font), {
-        ...(opts.read || {}),
-        candidates,
-      });
+      readTurn(warm.gray, warm.w, warm.h, templatesFor(s0.font), opts.read || {});
     }
   }
 
@@ -158,10 +152,7 @@ function bench(opts = {}) {
     const raw = new Uint8Array(Buffer.from(s.gray, 'base64'));
     const img = target ? upscale(raw, s.w, s.h, Math.max(1, Math.min(8, target / s.height))) : { gray: raw, w: s.w, h: s.h };
     const started = process.hrtime.bigint();
-    const got = readTurn(img.gray, img.w, img.h, templatesFor(s.font), {
-      ...(opts.read || {}),
-      candidates,
-    });
+    const got = readTurn(img.gray, img.w, img.h, templatesFor(s.font), opts.read || {});
     times.push(Number(process.hrtime.bigint() - started) / 1e6);
     const where = `${s.font} ${s.height}px${s.invert ? ' 반전' : ''}`;
     if (!got) {
@@ -207,15 +198,14 @@ module.exports = { toGrid, byDigit, upscale, bench, loadFixtures, report, RAW };
 
 if (require.main === module) {
   const verbose = process.argv.includes('--verbose');
-  report('처음 보는 폰트 · 빌드 턴 후보 사용 (실제 앱 조건)', bench({ verbose, useCandidates: true }), {
+  report('처음 보는 폰트 (실제 앱 조건)', bench({ verbose }), {
     showMisses: verbose,
   });
   console.log();
-  report('가르친 뒤 (그 폰트를 아는 조건)', bench({ holdout: false, useCandidates: true }), {
+  report('가르친 뒤 (그 폰트를 아는 조건)', bench({ holdout: false }), {
     showMisses: verbose,
   });
   console.log();
-  report('참고 — 후보 없이', bench({ verbose }), { showMisses: verbose });
   console.log();
-  report('참고 — 화면 확대 없이 (원본 크기 그대로)', bench({ useCandidates: true, target: 0 }));
+  report('참고 — 화면 확대 없이 (원본 크기 그대로)', bench({ target: 0 }));
 }

@@ -182,28 +182,25 @@ test('후보가 없으면 확신이 있을 때만 답한다', () => {
   assert.strictEqual(bestValue([[0.9, 0.89, 0, 0, 0, 0, 0, 0, 0, 0]]), null);
 });
 
-test('후보가 있으면 후보 안에서 1·2등을 다시 가른다', () => {
-  // 8과 0이 붙어 있다 — 둘 다 후보면 답하지 않아야 한다
-  const scores = [[0.88, 0, 0, 0, 0, 0, 0, 0, 0.9, 0]];
-  assert.strictEqual(bestValue(scores, { candidates: [0, 8] }), null);
-  // 0이 후보가 아니면 8로 확정된다
-  const only8 = bestValue(scores, { candidates: [4, 8] });
-  assert.ok(only8);
-  assert.strictEqual(only8.value, 8);
+test('빌드 턴을 "후보"로 맞추지 않는다', () => {
+  // ★ 이 기능은 걷어냈다. 되살리면 실제 게임에서 18이 28로 읽힌다.
+  //
+  // 게임의 턴 표시는 1씩 올라가는 카운터라 화면에 뜨는 값 대부분이 빌드 턴이 **아니다.**
+  // 그런데 후보에 맞추는 코드는 "읽은 값이 빌드 턴일 것"을 전제해서, 빌드 턴이 아닌
+  // 턴을 가까운 빌드 턴으로 바꿔 놓았다 (20→16, 9→0, 7→12).
+  // 표본 792장을 실제 조건(빌드 턴 다섯 개만 후보)으로 재면 틀림 0.3% → **8.5%**.
+  const scores = [[0.9, 0, 0, 0, 0, 0, 0, 0, 0.4, 0]];
+  const got = bestValue(scores, /** @type {any} */ ({ candidates: [8] }));
+  assert.ok(got, '또렷하면 읽어야 한다');
+  assert.strictEqual(got.value, 0, '후보(8)에 끌려가면 안 된다');
+  assert.strictEqual('snapped' in got, false, '맞춤 표시 자체가 없어야 한다');
 });
 
-test('후보 쪽이 확실하면 원본을 제치고 그쪽으로 맞춘다', () => {
-  // 원본은 0이지만 후보에는 8만 있다
-  const scores = [[0.86, 0, 0, 0, 0, 0, 0, 0, 0.82, 0]];
-  const got = bestValue(scores, { candidates: [8] });
-  assert.ok(got);
-  assert.strictEqual(got.value, 8);
-  assert.strictEqual(got.snapped, true, '맞춘 값에는 표시가 붙어야 한다');
-});
-
-test('자릿수가 다른 후보는 무시한다', () => {
-  const got = bestValue([[0.9, 0, 0, 0, 0, 0, 0, 0, 0, 0]], { candidates: [100] });
-  assert.ok(got === null || got.value === 0);
+test('확신이 모자라면 아무것도 안 고른다', () => {
+  // 1등과 2등이 붙어 있으면 후보가 있든 없든 답하지 않는다 — 틀린 턴보다 낫다
+  const tight = [[0.88, 0, 0, 0, 0, 0, 0, 0, 0.9, 0]];
+  assert.strictEqual(bestValue(tight), null);
+  assert.strictEqual(bestValue(tight, /** @type {any} */ ({ candidates: [8] })), null);
 });
 
 test('빈 입력에는 null', () => {
@@ -295,7 +292,7 @@ test('실제 폰트 표본을 한 자리·두 자리·세 자리 모두 읽는�
     for (const invert of [false, true]) {
       const s = sample((x) => x.value === value && x.invert === invert && x.height === 44);
       if (!s) continue;
-      const got = readTurn(s.gray, s.w, s.h, TEMPLATES, { candidates: [value] });
+      const got = readTurn(s.gray, s.w, s.h, TEMPLATES);
       assert.ok(got, `${value} (반전=${invert}) 를 못 읽었다`);
       assert.strictEqual(got.value, value);
     }
@@ -313,10 +310,10 @@ test('명암이 뒤집혀도 자릿수를 잃지 않는다', { skip: !loadFixtur
 });
 
 test('처음 보는 폰트에서 정확도와 오독이 기준을 지킨다', { skip: !loadFixtures() }, () => {
-  // 앱이 실제로 넣는 것과 같은 조건(확대 + 빌드 턴 후보)에서 잰다.
+  // 앱이 실제로 넣는 것과 같은 조건(크롭을 CROP_TARGET_HEIGHT로 확대)에서 잰다.
   // 지금 수치는 맞음 99.7% · 틀림 0.3%. 문턱값·대조 계수를 건드리면
   // 여기가 먼저 나빠진다 — 회귀를 잡는 자물쇠다.
-  const r = bench({ useCandidates: true });
+  const r = bench({});
   assert.ok(r);
   const wrong = r.wrong / r.total;
   const ok = r.ok / r.total;
@@ -327,8 +324,8 @@ test('처음 보는 폰트에서 정확도와 오독이 기준을 지킨다', { 
 test('화면 확대가 정확도를 올린다', { skip: !loadFixtures() }, () => {
   // 인식 전에 크롭을 CROP_TARGET_HEIGHT 근처로 키운다. 그 값을 잘못 만지면
   // 조용히 나빠지므로, 키운 쪽이 더 나은지 자물쇠로 걸어 둔다.
-  const scaled = bench({ useCandidates: true });
-  const native = bench({ useCandidates: true, target: 0 });
+  const scaled = bench({});
+  const native = bench({ target: 0 });
   assert.ok(scaled && native);
   assert.ok(
     scaled.wrong <= native.wrong && scaled.ok >= native.ok,
@@ -339,20 +336,11 @@ test('화면 확대가 정확도를 올린다', { skip: !loadFixtures() }, () =>
 test('문턱값은 한 번이면 충분하다 — 여러 번은 오히려 나쁘다', { skip: !loadFixtures() }, () => {
   // 여러 번 보면 나을 것 같아 넣었다가 재 보고 뺐다. 다시 넣고 싶어질 때를 위해
   // "재 보니 이랬다"를 자물쇠로 걸어 둔다.
-  const once = bench({ useCandidates: true });
-  const many = bench({ useCandidates: true, read: { thresholdOffsets: [0, -8, 8] } });
+  const once = bench({});
+  const many = bench({ read: { thresholdOffsets: [0, -8, 8] } });
   assert.ok(once && many);
   assert.ok(once.wrong <= many.wrong, `한 번: 틀림 ${once.wrong} / 여러 번: 틀림 ${many.wrong}`);
   assert.ok(once.ms < many.ms, `한 번이 더 빨라야 한다 (${once.ms} vs ${many.ms})`);
-});
-
-test('후보 없이도 오독이 낮다', { skip: !loadFixtures() }, () => {
-  // 빌드 턴을 후보로 넘기는 길이 막혀도(단계가 없는 빌드 등) 인식 자체가
-  // 버텨야 한다. 후보에 기대어 수치가 좋아 보이는 것을 막는 자물쇠다.
-  const r = bench({});
-  assert.ok(r);
-  const wrong = r.wrong / r.total;
-  assert.ok(wrong <= 0.015, `오독 ${(wrong * 100).toFixed(1)}% — 1.5%를 넘으면 안 된다`);
 });
 
 test('한 장 읽는 시간이 예산 안에 있다', { skip: !loadFixtures() }, () => {
@@ -360,14 +348,14 @@ test('한 장 읽는 시간이 예산 안에 있다', { skip: !loadFixtures() },
   // 14ms였고, 그래서 주기를 600ms로 잡을 수밖에 없었다. 지금은 1~2ms다.
   // 여기 걸린 값은 느린 기계에서도 통과할 만큼 넉넉하게 잡았다 — 구조가 무너지면
   // 열 배 단위로 나빠지므로 이 정도로도 회귀는 잡힌다.
-  const r = bench({ useCandidates: true });
+  const r = bench({});
   assert.ok(r);
   assert.ok(r.ms < 8, `중앙값 ${r.ms.toFixed(2)}ms — 8ms를 넘으면 구조가 무너진 것이다`);
 });
 
 test('가르친 폰트에서는 더 정확하다', { skip: !loadFixtures() }, () => {
-  const taught = bench({ useCandidates: true, holdout: false });
-  const unseen = bench({ useCandidates: true });
+  const taught = bench({ holdout: false });
+  const unseen = bench({});
   assert.ok(taught && unseen);
   assert.ok(
     taught.ok >= unseen.ok,
