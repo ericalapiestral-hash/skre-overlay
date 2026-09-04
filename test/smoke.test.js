@@ -112,6 +112,12 @@ test('앱이 실제로 뜨고 화면·프리로드·IPC가 이어진다', { skip
     '화면이 다 안 그려졌다',
   );
 
+  // 턴 영역 기본 위치가 화면까지 건너갔는지. 설정이 비어 있는 채로 띄웠으므로
+  // (userData를 새로 만든다) 앱은 기본 위치로 시작한다고 말해야 한다 —
+  // 이게 안 되면 사용자는 켜자마자 "턴 영역을 지정하세요"만 보게 된다.
+  assert.deepStrictEqual(got.probe.presets, ['destroyer'], '기본 위치가 화면에 안 갔다');
+  assert.match(got.probe.statusText, /기본 위치|파괴신/, `기본 위치로 시작 안 했다: "${got.probe.statusText}"`);
+
   // 진짜 IPC 왕복 — 채널 이름이나 핸들러가 어긋나면 여기서 걸린다
   assert.strictEqual(got.probe.catalog.ok, true, `도감 IPC가 실패했다: ${JSON.stringify(got.probe.catalog)}`);
   assert.strictEqual(got.probe.catalog.builds, 2, '스킬 순서를 못 읽은 빌드도 목록에 남아야 한다');

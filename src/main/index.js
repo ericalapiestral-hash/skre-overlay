@@ -584,6 +584,7 @@ function smoke() {
             elements: ['app', 'steps', 'status', 'build', 'auto', 'rate']
               .filter((id) => document.getElementById(id)),
             statusText: (document.getElementById('status') || {}).textContent || '',
+            presets: api && api.region && api.region.presets ? api.region.presets.map((p) => p.id) : null,
           };
           // 진짜 IPC 왕복 — 프리로드 다리와 메인 핸들러를 같이 확인한다
           try {
