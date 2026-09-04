@@ -74,7 +74,7 @@ npm start
 ## 개발
 
 ```
-npm test         파서 · 추적 · 인식기 · 도감 읽기 + 전투 시나리오 82개 (167개)
+npm test         파서 · 추적 · 인식기 · 도감 + 전투 시나리오 82개 + 부팅 확인 (168개)
 npm run typecheck 타입 검사 (JSDoc 기반, 빌드 단계 없음)
 npm run check    위 둘 다
 npm run doctor   도감을 어디서 찾았고 몇 개를 읽었는지 (화면 없이)

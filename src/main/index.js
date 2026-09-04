@@ -31,6 +31,9 @@ const {
 
 const BUILTIN = loadTemplates(require('../shared/templates.json'));
 const DOCTOR = process.argv.includes('--doctor');
+// 화면 없이 "앱이 진짜로 뜨는지"만 확인하는 모드 — test/smoke.test.js가 쓴다.
+// 단위 테스트는 순수 로직만 보므로 Electron·창·프리로드·IPC가 부러진 건 아무도 못 잡는다.
+const SMOKE = process.argv.includes('--smoke');
 
 const RENDERER = path.join(__dirname, '..', 'renderer');
 const PRELOAD = path.join(__dirname, '..', 'preload');
@@ -487,6 +490,83 @@ function doctor() {
 
 // ─────────────────────────────── 시작
 
+/**
+ * --smoke — 화면 없이 앱을 한 번 띄워 보고 결과를 한 줄 JSON으로 뱉고 끝낸다.
+ *
+ * 확인하는 것은 단위 테스트가 절대 못 보는 층이다: Electron이 뜨는가, 창이 생기는가,
+ * 프리로드가 다리를 놓았는가, 렌더러가 에러 없이 그려졌는가, 그리고 **렌더러에서
+ * 실제 IPC를 부르면 메인이 답하는가**. 채널 이름 오타나 프리로드 경로 실수는
+ * 여기서만 걸린다 — 순수 로직 테스트는 전부 통과한 채로 앱이 안 뜰 수 있다.
+ */
+function smoke() {
+  const errors = [];
+  const win = overlayWin;
+  if (!win) {
+    process.stdout.write('\nSKRE_SMOKE {"ok":false,"errors":["창을 못 만들었다"]}\n');
+    app.exit(1);
+    return;
+  }
+  const wc = win.webContents;
+  wc.on('console-message', (_e, level, message) => {
+    // 2 = warning, 3 = error
+    if (level >= 3) errors.push(message);
+  });
+  wc.on('did-fail-load', (_e, code, desc) => errors.push(`did-fail-load ${code} ${desc}`));
+  wc.on('render-process-gone', (_e, d) => errors.push(`render-process-gone ${d.reason}`));
+  wc.on('preload-error', (_e, file, err) => errors.push(`preload-error ${file} ${err.message}`));
+
+  const finish = (result) => {
+    process.stdout.write(`\nSKRE_SMOKE ${JSON.stringify(result)}\n`);
+    app.exit(result.ok ? 0 : 1);
+  };
+
+  wc.once('did-finish-load', () => {
+    // 렌더러가 첫 그림을 그릴 틈을 주고 나서 안을 들여다본다
+    setTimeout(() => {
+      wc.executeJavaScript(
+        `(async () => {
+          const api = window.overlay;
+          const out = {
+            bridge: api ? Object.keys(api).sort() : null,
+            cropHeight: api && api.tune && api.tune.cropHeight,
+            elements: ['app', 'steps', 'status', 'build', 'auto', 'rate']
+              .filter((id) => document.getElementById(id)),
+            statusText: (document.getElementById('status') || {}).textContent || '',
+          };
+          // 진짜 IPC 왕복 — 프리로드 다리와 메인 핸들러를 같이 확인한다
+          try {
+            const cat = await api.catalog.load();
+            out.catalog = { ok: Boolean(cat && cat.ok), builds: (cat && cat.builds || []).length };
+          } catch (e) { out.catalog = { error: String(e && e.message || e) }; }
+          try {
+            const cfg = await api.config.get();
+            out.config = cfg && typeof cfg === 'object' ? Object.keys(cfg).sort() : null;
+          } catch (e) { out.config = { error: String(e && e.message || e) }; }
+          try {
+            await api.engine.setFlow(null, {});
+            const r = await api.engine.feed(new Uint8Array(80 * 40).fill(28), 80, 40);
+            out.engine = { fed: Boolean(r && typeof r.index === 'number'), turn: r && r.turn };
+          } catch (e) { out.engine = { error: String(e && e.message || e) }; }
+          return out;
+        })()`,
+      )
+        .then((probe) => {
+          finish({
+            ok: errors.length === 0,
+            window: { created: true, visible: win.isVisible(), alwaysOnTop: win.isAlwaysOnTop() },
+            probe,
+            // 헤드리스(xvfb)에는 창 관리자가 없어 전역 단축키가 안 잡힐 수 있다 — 참고용
+            shortcutFailures,
+            errors,
+          });
+        })
+        .catch((e) => finish({ ok: false, errors: [...errors, `probe: ${e.message}`] }));
+    }, 1500);
+  });
+
+  setTimeout(() => finish({ ok: false, errors: [...errors, '시간 초과 — 창이 안 떴다'] }), 30000);
+}
+
 // 게임 위에 뜨는 도구라 GPU 가속 문제로 투명창이 검게 나오는 기기가 있다
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 
@@ -514,6 +594,7 @@ if (!DOCTOR && !app.requestSingleInstanceLock()) {
     createOverlay();
     rewatch();
     registerShortcuts();
+    if (SMOKE) smoke();
   });
 
   app.on('will-quit', () => {

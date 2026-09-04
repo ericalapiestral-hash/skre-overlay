@@ -184,7 +184,7 @@ tesseract는 **없앴다.** 76MB와 첫 실행 1분 다운로드, asar·워커 �
 ```bash
 npm install
 npm start          # 실행
-npm test           # 단위 111개 + 전투 시나리오
+npm test           # 단위 + 전투 시나리오 + 부팅 스모크 (168개)
 npm run typecheck  # JSDoc 기반 타입 검사 (빌드 단계 없음)
 npm run check      # typecheck + test
 npm run doctor     # 도감을 어디서 찾았고 몇 개 읽었는지 (화면 없이)
@@ -214,6 +214,22 @@ src/
 tools/          make-templates · make-fixtures · bench-reader · tune-reader
 test/           단위 테스트 + fixtures/digits.json.gz + scenarios/*.json (전투 시나리오)
 ```
+
+### 앱이 진짜로 뜨는지 (`test/smoke.test.js`)
+
+나머지 테스트는 전부 순수 로직만 본다. 그래서 **전부 초록인 채로 앱이 아예 안 뜨는
+일**이 생긴다 — 프리로드 경로 오타, IPC 채널 이름 불일치, contextBridge가 못 넘기는 값,
+렌더러 문법 오류, Electron 판올림으로 사라진 옵션. 이 층은 이 테스트만 잡는다.
+
+진짜 Electron을 띄워서(화면 없으면 `xvfb-run`) 창·프리로드 다리·화면 요소를 보고,
+**렌더러 안에서 실제 IPC를 왕복시킨다**(도감·설정·엔진). 채널 이름을 한 글자 고치면
+바로 빨개진다 — 확인해 두었다. 시험용 도감과 userData를 임시 폴더에 만들어 쓰므로
+그 컴퓨터에 뭐가 깔려 있든 결과가 같다.
+
+- 화면도 xvfb도 없으면 **건너뛴다.** 검사를 못 했으면 못 했다고 하지 통과라고 하지 않는다.
+- `node:test`는 `skip`이 **빈 문자열이어도 건너뛴다.** `{ skip: why }`로 두면 조건이 다
+  맞는 곳에서도 조용히 안 돈다 — 실제로 그래서 한 번 속았다. `why || false`로 둘 것.
+- 게임 화면·게임 폰트·윈도우 고DPI는 여기서 확인 못 한다. 그건 실제 PC에서 봐야 한다.
 
 ## 알아둘 것
 
