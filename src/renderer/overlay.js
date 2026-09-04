@@ -676,6 +676,26 @@ $('search').addEventListener('keydown', (e) => {
 $('btn-prev').addEventListener('click', () => nav(-1));
 $('btn-next').addEventListener('click', () => nav(1));
 $('btn-region').addEventListener('click', () => api.region.open());
+
+/**
+ * 기본 위치로 맞춘다 (파괴신·공성전은 턴이 늘 왼쪽 위 같은 자리에 있다).
+ * @param {boolean} [save] 설정에 저장할지 — 앱이 알아서 쓴 경우엔 저장하지 않는다
+ */
+async function usePreset(save = true) {
+  const preset = api.region.presets[0];
+  if (!preset) return;
+  state.region = { displayId: state.region ? state.region.displayId : undefined, ...preset.region };
+  if (save) await api.config.set({ turnRegion: state.region });
+  if (state.auto) {
+    await toggleAuto(false);
+    await toggleAuto(true);
+  }
+}
+
+$('btn-preset').addEventListener('click', async () => {
+  await usePreset();
+  setStatus(`${api.region.presets[0].label} 자리로 맞췄어요 — 안 맞으면 [턴 영역]으로 직접 잡으세요.`, '');
+});
 $('auto').addEventListener('change', (e) => toggleAuto(e.target.checked));
 
 $('btn-teach').addEventListener('click', () => {
@@ -772,6 +792,11 @@ window.addEventListener('beforeunload', stopCapture);
 (async () => {
   const config = await api.config.get();
   state.region = config.turnRegion || null;
+  // 아직 한 번도 안 잡았으면 기본 위치로 시작한다 — 켜자마자 바로 써 볼 수 있게.
+  // 저장은 안 한다: 사용자가 고른 값과 앱이 짐작한 값을 섞으면, 다음에 기본값을
+  // 고쳤을 때 이미 저장돼 버린 옛 값에 발이 묶인다.
+  const usingPreset = !state.region;
+  if (usingPreset) await usePreset(false);
   state.tickMs = config.tickMs || 100;
 
   $('opacity').value = String(config.opacity ?? 88);
@@ -783,5 +808,9 @@ window.addEventListener('beforeunload', stopCapture);
   $('tick-val').textContent = `${state.tickMs}ms`;
 
   await loadCatalog({ first: true });
-  if (state.region) setStatus('턴 영역이 지정돼 있어요 — [자동]을 켜면 인식을 시작합니다.', '');
+  if (usingPreset) {
+    setStatus(`${api.region.presets[0].label} 자리로 시작합니다 — [자동]을 켜 보세요.`, '');
+  } else if (state.region) {
+    setStatus('턴 영역이 지정돼 있어요 — [자동]을 켜면 인식을 시작합니다.', '');
+  }
 })();

@@ -1,0 +1,47 @@
+# 윈도우 exe 만들기 — 진짜 윈도우에서 짓는다.
+#
+# 리눅스에서도 electron-builder로 win 대상을 지을 수는 있지만, exe의 아이콘·이름 같은
+# 메타데이터를 넣는 단계에 wine이 필요하다. 그 단계를 건너뛰면 exe 속성이 "Electron"으로
+# 남는다. 배포용은 여기서 windows-latest로 지어 그 문제가 아예 없게 한다.
+#
+# ⚠ **exe를 릴리스로 올리는 건 사람이 판단한다.** 이 워크플로는 짓고 결과물만 남긴다
+# (Actions의 artifact — 저장소 접근 권한이 있는 사람만 받는다). 저장소가 공개라
+# 릴리스에 올리면 아무나 받을 수 있기 때문이다. 도감(builds.json)은 exe에 안 들어가지만
+# 도구 자체를 길드 밖에 내보내지 않는 게 이 프로젝트의 방침이다 (CLAUDE.md).
+name: 윈도우 빌드
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [claude/guildbot-overlay-rebuild-e8pq9u]
+    paths-ignore: ['**.md']
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      # 앱이 진짜로 뜨는지 보는 테스트는 화면이 필요하다 (test/smoke.test.js)
+      - run: sudo apt-get update && sudo apt-get install -y xvfb
+      - run: npm run check
+
+  build-windows:
+    needs: test
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - run: npm ci
+      - run: npx electron-builder --win --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: skre-overlay-windows
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 30

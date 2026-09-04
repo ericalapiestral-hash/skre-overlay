@@ -17,6 +17,7 @@ interface OverlayApi {
   region: {
     open(): Promise<void>;
     onPicked(fn: (region: any) => void): () => void;
+    presets: Array<{ id: string; label: string; region: { fx: number; fy: number; fw: number; fh: number } }>;
   };
   capture: {
     source(displayId: number): Promise<{ sourceId: string; width: number; height: number } | null>;

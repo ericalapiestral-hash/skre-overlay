@@ -7,6 +7,7 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 const { CROP_TARGET_HEIGHT } = require('../shared/turnReader');
+const { PRESETS } = require('../shared/regions');
 
 /** 메인 → 렌더러 알림. 해제 함수를 돌려준다 */
 function on(channel, handler) {
@@ -33,6 +34,8 @@ contextBridge.exposeInMainWorld('overlay', {
   region: {
     open: () => ipcRenderer.invoke('picker:open'),
     onPicked: (fn) => on('turn:region', fn),
+    /** 콘텐츠별 기본 위치 — 사람이 매번 드래그하지 않아도 되게 (src/shared/regions.js) */
+    presets: PRESETS,
   },
   capture: {
     source: (displayId) => ipcRenderer.invoke('capture:source', displayId),
