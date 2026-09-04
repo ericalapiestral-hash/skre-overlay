@@ -454,7 +454,7 @@ function registerIpc() {
 
     const gray = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
     for (const bright of [true, false]) {
-      const boxes = digitBoxes(components(binarize(gray, w, h, bright), w, h), h, 3);
+      const boxes = digitBoxes(components(binarize(gray, w, h, bright), w, h), h, 3, { imgW: w });
       if (boxes.length !== text.length) continue;
       const added = boxes.map((box, i) => ({
         d: Number(text[i]),

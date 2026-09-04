@@ -40,6 +40,16 @@ const VALUES = [0, 4, 8, 12, 16, 20, 24, 28, 32, 36, 40, 44, 48, 52, 56, 60, 64,
 /** 화면에서 턴 숫자가 차지하는 높이 (픽셀) */
 const HEIGHTS = [22, 32, 44];
 
+/**
+ * 게임의 턴 표시는 그냥 숫자가 아니라 **"16 / 70"** (지금 턴 / 최대 턴)이다.
+ * 띄어쓰기가 화면마다 조금씩 다르게 보여서(1/70 · 16 /70) 여러 벌을 그려 둔다.
+ * 최대 턴도 콘텐츠마다 다를 수 있으니 몇 가지로.
+ */
+const PAIR_FORMS = [(v, m) => `${v}/${m}`, (v, m) => `${v} / ${m}`, (v, m) => `${v} /${m}`];
+const PAIR_MAXES = [70, 50, 100];
+/** 왼쪽 숫자로 그려 볼 값 — 한 자리·두 자리·최대와 같은 값까지 */
+const PAIR_VALUES = [0, 1, 7, 9, 12, 16, 30, 47, 68, 70];
+
 const OUT = path.join(__dirname, '..', 'test', 'fixtures', 'digits.json.gz');
 
 const PAGE = `data:text/html;charset=utf-8,${encodeURIComponent(`
@@ -121,10 +131,69 @@ app.whenReady().then(async () => {
     console.log(`  ${name} — ${samples.length}장`);
   }
 
+  // 슬래시만 그린 표본 — 슬래시를 가리는 문턱을 **앱과 같은 조건**(64px로 확대)에서
+  // 재려면 필요하다. 숫자 표본(samples)과 짝을 이룬다.
+  const slashes = [];
+  for (const template of FONTS) {
+    const name = template.replace('{S}px ', '').replace(/["']/g, '');
+    for (const height of HEIGHTS) {
+      const font = template.replace('{S}', String(height));
+      for (const invert of [false, true]) {
+        const bg = invert ? '#f0f0ee' : '#14161c';
+        const fg = invert ? '#191b22' : '#f2f4f8';
+        const shot = await win.webContents.executeJavaScript(
+          `window.draw(${JSON.stringify(font)}, "/", '${bg}', '${fg}')`,
+        );
+        slashes.push({
+          font: name,
+          height,
+          invert,
+          w: shot.w,
+          h: shot.h,
+          gray: Buffer.from(toGray(Uint8Array.from(shot.data), shot.w, shot.h)).toString('base64'),
+        });
+      }
+    }
+  }
+  console.log(`  슬래시 표본 ${slashes.length}장`);
+
+  // "N / 70" 표본 — 슬래시 앞까지만 읽는지 확인하는 데 쓴다 (test/slash.test.js)
+  const pairs = [];
+  for (const template of FONTS) {
+    const name = template.replace('{S}px ', '').replace(/["']/g, '');
+    for (const height of [22, 32]) {
+      const font = template.replace('{S}', String(height));
+      for (const form of PAIR_FORMS) {
+        for (const max of PAIR_MAXES) {
+          for (const value of PAIR_VALUES) {
+            if (value > max) continue;
+            const text = form(value, max);
+            const shot = await win.webContents.executeJavaScript(
+              `window.draw(${JSON.stringify(font)}, ${JSON.stringify(text)}, '#14161c', '#f2f4f8')`,
+            );
+            pairs.push({
+              font: name,
+              height,
+              value,
+              max,
+              text,
+              w: shot.w,
+              h: shot.h,
+              gray: Buffer.from(toGray(Uint8Array.from(shot.data), shot.w, shot.h)).toString('base64'),
+            });
+          }
+        }
+      }
+    }
+  }
+  console.log(`  "N / M" 표본 ${pairs.length}장`);
+
   const json = JSON.stringify({
     설명: '인식기 성능 표본. tools/make-fixtures.js 가 만든다.',
     holdout,
     samples,
+    slashes,
+    pairs,
   });
   fs.mkdirSync(path.dirname(OUT), { recursive: true });
   fs.writeFileSync(OUT, zlib.gzipSync(Buffer.from(json, 'utf8'), { level: 9 }));

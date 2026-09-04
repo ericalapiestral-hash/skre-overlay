@@ -201,6 +201,75 @@ function looksLikeDigit(c, imageH, maxDigits = 3) {
 }
 
 /**
+ * 슬래시를 가리는 값 — `tools/measure-slash.js` 로 **재서** 골랐다.
+ *
+ * 게임의 턴 표시는 그냥 숫자가 아니라 **"16 / 70"** (지금 턴 / 최대 턴)이다.
+ * 오른쪽 70까지 같이 읽으면 "1670"이 되므로 슬래시를 찾아 왼쪽만 남겨야 한다.
+ *
+ * 값은 `tools/tune-slash.js`가 **앱과 같은 조건에서**(크롭을 64px로 키운 뒤) 재서 골랐다.
+ * 원본 크기의 낱글자로 재서 고른 값을 넣었더니 오독이 일곱 배로 늘었다 — 확대하면
+ * 획이 번져 ratio도 fill도 달라진다. bench가 예전에 저지른 것과 똑같은 실수다.
+ * **원본 크기로 재는 쪽으로 되돌리지 말 것.**
+ *
+ * 앱 조건에서는 **diag가 완전히 가른다**: 숫자는 −0.15~**0.23**, 슬래시는 **0.38**~0.61.
+ * 그 틈(0.15)의 가운데가 0.31이다. ratio·fill은 갈라 주지는 않지만(둘 다 겹친다)
+ * 처음 보는 폰트에서 엉뚱한 덩어리가 diag만 높게 나오는 것을 막는 울타리로 같이 둔다.
+ *
+ * 고르는 기준 둘:
+ *  · **숫자를 슬래시로 잘못 보는 일(거짓 양성)이 0**일 것. 그러면 진짜 숫자가 잘려 나가
+ *    턴을 반쪽만 읽는다. 슬래시를 못 알아보는 건 예전 상태로 돌아갈 뿐이라 덜 나쁘다.
+ *  · **양쪽 여유의 작은 쪽**을 키울 것. 한쪽만 넉넉한 값은 반대쪽으로 뚫린다.
+ *
+ * 지금 값: 숫자 덩어리 1470개 중 오검출 0, 슬래시 100% 포착, 양쪽 여유 0.07대.
+ * 만질 일이 생기면 `node tools/tune-slash.js`로 **다시 재서** 정할 것.
+ */
+const SLASH = { maxRatio: 0.64, maxFill: 0.6, minDiag: 0.31 };
+
+/**
+ * 덩어리의 위/아래 4분의 1에서 켜진 칸의 x 무게중심 차이 (덩어리 너비 대비).
+ * 슬래시는 위가 오른쪽·아래가 왼쪽이라 크게 양수다. 숫자는 어느 것도 그렇지 않다.
+ */
+function diagOf(box, imgW) {
+  const { labels, label, minX, maxX, minY, maxY, w, h } = box;
+  const band = Math.max(1, Math.round(h * 0.25));
+  let topSum = 0;
+  let topN = 0;
+  let botSum = 0;
+  let botN = 0;
+  for (let y = minY; y <= maxY; y += 1) {
+    const top = y < minY + band;
+    const bottom = y > maxY - band;
+    if (!top && !bottom) continue;
+    for (let x = minX; x <= maxX; x += 1) {
+      if (labels[y * imgW + x] !== label) continue;
+      if (top) {
+        topSum += x - minX;
+        topN += 1;
+      } else {
+        botSum += x - minX;
+        botN += 1;
+      }
+    }
+  }
+  return topN && botN ? (topSum / topN - botSum / botN) / w : 0;
+}
+
+/** "16 / 70"의 슬래시인가 */
+function looksLikeSlash(box, imgW) {
+  return (
+    box.w / box.h < SLASH.maxRatio &&
+    box.count / (box.w * box.h) < SLASH.maxFill &&
+    diagOf(box, imgW) > SLASH.minDiag
+  );
+}
+
+/**
+ * 숫자 하나라기엔 너무 넓은 덩어리 — 두 글자가 붙은 것이다.
+ * 재 본 숫자들의 가로/세로는 아무리 넓어도 0.84였다. 여유를 두고 0.9로 잡는다.
+ */
+const MERGED_RATIO = 0.9;
+
+/**
  * 덩어리에서 가로 [x0, x1) 구간만 떼어 낸다 (x는 덩어리 왼쪽 기준).
  * @returns {Box|null} 남는 게 거의 없으면 null
  */
@@ -342,13 +411,54 @@ function pickLine(lines, maxDigits) {
  * 숫자로 볼 만한 덩어리만 왼쪽부터 정렬해 돌려준다.
  * 자릿수를 넘치면 가로로 이어진 구간 중 가장 큰 덩어리들을 남긴다 (끝에 붙은 잡티 제거).
  */
-function digitBoxes(comps, imageH, maxDigits = 3) {
+function digitBoxes(comps, imageH, maxDigits = 3, opts = {}) {
+  const { imgW = 0, out = null } = opts;
+  if (out) {
+    out.lineCount = 0;
+    out.ambiguous = false;
+    out.merged = false;
+  }
   const usable = comps.filter((c) => looksLikeDigit(c, imageH, maxDigits));
   if (usable.length === 0) return [];
 
-  const line = pickLine(textLines(usable), maxDigits);
+  let line = pickLine(textLines(usable), maxDigits);
   line.sort((a, b) => a.minX - b.minX);
+  // 자르기 **전** 글자 수 — 어느 명암이 글자를 더 잘 갈랐는지 재는 값이다 (readTurn 참고)
+  if (out) {
+    out.lineCount = line.length;
+    // 두 글자가 붙은 덩어리가 있나 — 슬래시가 옆 숫자에 붙었을 수 있다는 신호다
+    out.merged = imgW > 0 && line.some((c) => c.w / c.h > MERGED_RATIO);
+  }
+
+  // ★ "16 / 70" 에서 슬래시 앞까지만 남긴다 — 오른쪽은 최대 턴이라 우리가 읽을 것이 아니다.
+  //
+  // 자릿수 제한(maxDigits)에 맡기면 안 된다. 그건 "면적 합이 제일 큰 연속 구간"을
+  // 고르는 것이라 "16/70"에서 엉뚱하게 "6/7"이나 "/70"을 집는다. 슬래시를 실제로
+  // 찾아서 거기서 끊어야 한다. 슬래시가 안 보이면(사용자가 영역을 숫자에만 딱 맞춰
+  // 잡았으면) 아무것도 안 하므로, 예전처럼 쓰던 사람에게도 달라지는 게 없다.
+  if (imgW > 0) {
+    const at = line.findIndex((c) => looksLikeSlash(c, imgW));
+    // 맨 앞이 슬래시로 보이면 자르지 않는다 — 남는 게 없으니 오검출일 가능성이 크다
+    if (at > 0) line = line.slice(0, at);
+  }
+
   if (line.length <= maxDigits) return line;
+
+  // ★ 자릿수를 넘치는데 슬래시도 못 찾았고, 두 글자가 붙은 덩어리까지 있으면 **읽지 않는다.**
+  //
+  // "12/70"에서 슬래시가 7에 붙어 한 덩어리가 되면(작은 글자에서 실제로 생긴다) 아래
+  // 면적 규칙이 "2/7 0" 같은 엉뚱한 구간을 골라 **자신 있게 틀린 턴**을 내놓는다.
+  // 틀린 턴을 믿고 단계를 건너뛰면 순서가 통째로 어긋나서, 아예 못 읽고 가만히 있느니만
+  // 못하다 (CLAUDE.md). 이 조건은 좁다 — 붙은 덩어리가 없으면(끝에 잡티가 붙은 흔한
+  // 경우) 예전처럼 면적 규칙으로 간다.
+  //
+  // 여기서 그냥 빈 손으로 돌아가면 **반대쪽 명암이 그대로 이긴다.** 뒤집힌 쪽에서는
+  // 글자 구멍 두어 개가 잡히는데, 그게 유일한 후보가 되어 "12/70"이 "1"로 읽혔다.
+  // 그래서 "못 읽겠다"를 밖으로 알려서 프레임 전체를 물리게 한다 (readTurn 참고).
+  if (out && out.merged) {
+    out.ambiguous = true;
+    return [];
+  }
 
   // 연속한 maxDigits개 중 면적 합이 가장 큰 구간
   let bestAt = 0;
@@ -859,14 +969,21 @@ function readTurn(gray, w, h, templates, opts = {}) {
   }
 
   let best = null;
+  // 어느 명암에서 "이건 못 읽겠다"가 나왔을 때의 글자 수 — 그보다 못 가른 결과는 물린다
+  let vetoSegs = -1;
   for (const threshold of thresholds) {
     for (const bright of [true, false]) {
+      // lineCount = 슬래시로 자르기 **전** 의 글자 수. 아래 "자릿수가 많은 쪽이 이긴다"에 쓴다.
+      const seg = {};
       const found = digitBoxes(
         components(binarize(gray, w, h, bright, threshold), w, h),
         h,
         maxDigits,
+        { imgW: w, out: seg },
       );
+      if (seg.ambiguous && seg.lineCount > vetoSegs) vetoSegs = seg.lineCount;
       if (found.length === 0) continue;
+
 
       // 붙어 버린 덩어리를 풀어 준다 ("12"가 한 덩어리로 잡히는 흔한 경우)
       const boxes = [];
@@ -876,33 +993,59 @@ function readTurn(gray, w, h, templates, opts = {}) {
         boxes.push(...got.boxes);
         scores.push(...got.scores);
       }
+
+      // ★ 나눈 **뒤에** 다시 한 번 슬래시를 찾아 자른다.
+      //
+      // 작은 글자에서는 슬래시가 옆 숫자에 붙어 한 덩어리가 된다 ("0/70"의 "/7").
+      // 그러면 덩어리 단계에서는 슬래시가 안 보이고, 나눠 놓고 보면 보인다.
+      // 여기서 안 자르면 자릿수를 넘겨 이 명암이 통째로 버려지고, 뒤집힌 명암에서 잡힌
+      // **글자 구멍**이 유일한 후보가 되어 빌드 턴에 맞춰 자신 있는 오답을 낸다
+      // (실제로 "0/70"이 "12"로 읽혔다).
+      const cutAt = boxes.findIndex((b) => looksLikeSlash(b, w));
+      if (cutAt > 0) {
+        boxes.length = cutAt;
+        scores.length = cutAt;
+      }
       if (boxes.length === 0 || boxes.length > maxDigits) continue;
 
       const got = bestValue(scores, opts);
       if (!got) continue;
 
-      const ranked = { ...got, bright, threshold, boxes: boxes.length };
+      const ranked = { ...got, bright, threshold, boxes: boxes.length, segs: seg.lineCount };
 
       // ★ 자릿수를 더 많이 찾은 쪽이 이긴다.
       //
       // 점수(마진)만 보고 고르면, 글자와 배경이 뒤집힌 쪽에서 "60"이 한 덩어리로
       // 잡혀 7 하나로 읽히고, 자릿수가 하나뿐이라 경쟁자가 없어 마진이 커서
       // **그 엉터리 결과가 이겼다.** 두 자리를 찾아낸 쪽이 거의 항상 옳다.
+      //
+      // 세는 것은 **슬래시로 자르기 전**의 글자 수(segs)다. 자른 뒤 개수로 비교하면
+      // "0/70"에서 옳은 쪽이 한 자리(0)로 줄어드는 바람에, 뒤집힌 쪽에서 잡힌
+      // **글자 구멍 두 개**한테 진다 — 실제로 "0/70"이 "33"으로 읽혔다.
+      // 이 규칙이 재려는 건 "어느 명암이 글자를 더 잘 갈랐나"이지 결과의 자릿수가 아니다.
       const better =
         !best ||
-        ranked.boxes > best.boxes ||
-        (ranked.boxes === best.boxes &&
+        ranked.segs > best.segs ||
+        (ranked.segs === best.segs && ranked.boxes > best.boxes) ||
+        (ranked.segs === best.segs &&
+          ranked.boxes === best.boxes &&
           (ranked.margin > best.margin + 0.02 ||
             (Math.abs(ranked.margin - best.margin) <= 0.02 &&
               ranked.confidence > best.confidence)));
       if (better) best = ranked;
     }
   }
+  // 글자를 더 잘 가른 쪽이 "못 읽겠다"였다면, 덜 가른 쪽의 답도 믿지 않는다.
+  // 그쪽 답은 대개 뒤집힌 명암에서 잡힌 글자 구멍이라 자신 있게 틀린다.
+  if (best && best.segs < vetoSegs) return null;
   return best;
 }
 
 module.exports = {
   CROP_TARGET_HEIGHT,
+  SLASH,
+  looksLikeSlash,
+  diagOf,
   GRID_W,
   GRID_H,
   GRID_N,
