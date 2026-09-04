@@ -1,6 +1,6 @@
 {
   "name": "skre-overlay",
-  "version": "1.0.0",
+  "version": "0.9.0-test.1",
   "private": true,
   "description": "세븐나이츠 리버스 파괴신·공성전 빌드 오버레이 — 게임 위에 스킬 순서를 띄우고 턴을 읽어 자동으로 넘긴다",
   "author": "낭만주의",
