@@ -152,3 +152,14 @@ test('같은 라운드 안에서 손으로 옮긴 것은 미리 고름이 아니
   feed(0);
   assert.strictEqual(feed(0), 2, '평소대로 2라운드로 넘어간다');
 });
+
+test('받아들이지 않은 흐린 읽기는 이어짐을 끊는다', () => {
+  // 또렷한 오독 2프레임 + 흐린 1프레임으로 P7의 3프레임을 채워 순간이동하면 안 된다
+  const f = createFollower(RUNNING);
+  let t = 0;
+  assert.strictEqual(f.push(strong(16), (t += 100)).index, 0);
+  assert.strictEqual(f.push(weak(9), (t += 100)).index, 0, '흐린 한 프레임은 읽기가 아니다');
+  assert.strictEqual(f.push(strong(16), (t += 100)).index, 0);
+  assert.strictEqual(f.push(strong(16), (t += 100)).index, 0, '끊겼으니 아직 두 프레임째');
+  assert.strictEqual(f.push(strong(16), (t += 100)).index, 4);
+});

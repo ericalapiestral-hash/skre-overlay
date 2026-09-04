@@ -199,7 +199,14 @@ function createFollower(steps, options = {}) {
     else run = { value: v, frames: 1 };
 
     const strong = (reading.confidence ?? 0) >= cfg.strongScore && !reading.snapped;
-    if (!strong && run.frames < 2) return out(false, 'weak', v);
+    if (!strong && run.frames < 2) {
+      // 받아들이지 않은 흐린 읽기는 "이 프레임엔 못 읽었다"와 같으므로 가려짐처럼 이어짐을 끊는다.
+      // 또렷한 오독 사이에 흐린 프레임이 끼어 있다는 것 자체가 깜빡인다는 증거다 —
+      // 안 끊으면 오독 2프레임 + 흐린 1프레임으로 P7의 3프레임을 채워 순간이동한다.
+      streaks.jump.clear();
+      clearBackward();
+      return out(false, 'weak', v);
+    }
     if (flow.length === 0) return out(false, 'empty', v);
 
     // 아직 믿는 턴이 없으면(앱 시작·손으로 옮긴 직후) **지금 단계의 턴**을 기준으로 본다.
