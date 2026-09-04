@@ -117,6 +117,7 @@ function createFollower(steps, options = {}) {
     const next = ranges[s + 1];
     return next ? flow[next[0]].turn <= flow[b].turn : false;
   });
+  const isResetBuild = resetAfter.some(Boolean);
 
   let index = clamp(options.index ?? 0);
   /** 마지막으로 믿은 턴 */
@@ -198,11 +199,17 @@ function createFollower(steps, options = {}) {
     if (!strong && run.frames < 2) return out(false, 'weak', v);
     if (flow.length === 0) return out(false, 'empty', v);
 
-    // 처음 읽는 값 (또는 손으로 옮긴 뒤) — 앞이면 따라가고 뒤면 그대로
+    // 처음 읽는 값 (또는 손으로 옮긴 뒤). 화면이 지금 단계보다 뒤면 기준만 잡고 기다리고,
+    // 앞이면 **평소 규칙 그대로** 간다 — 두 단계 이상 건너뛰면 P7이 잡는다.
+    // 예전엔 여기서 곧장 옮겼다가, 손으로 옮긴 직후 오독 한 프레임에 끝으로 순간이동했다.
     if (believed === null) {
-      if (v >= flow[index].turn) return move(forwardFrom(index, v), v, 'first', out);
-      believed = v;
-      return out(false, 'first-behind', v);
+      if (v < flow[index].turn) {
+        believed = v;
+        return out(false, 'first-behind', v);
+      }
+      // believed는 일부러 아직 안 잡는다 — P7이 기다리는 동안 오독 값이 기준이 되면
+      // 그 뒤 진짜 턴이 전부 "큰 뒤로"가 되어 영영 갇힌다.
+      return forward(v, now, out);
     }
 
     return v >= believed ? forward(v, now, out) : backward(v, now, out);
@@ -221,13 +228,20 @@ function createFollower(steps, options = {}) {
     streaks.undo.clear();
   }
 
-  /** 크게 뛴 게 오독이었는지 — 뛰기 전 위치에 맞는 숫자가 돌아왔는가 (P8) */
+  /**
+   * 크게 뛴 게 오독이었는지 — 뛰기 전 위치에 맞는 숫자가 돌아왔는가 (P8).
+   *
+   * "뛰기 전 턴 근처"만 보면 안 된다. 턴 3에서 0으로 재시작한 직후의 0들이 그 근처라
+   * **재시작이 스스로를 되돌린다.** 그래서 뛴 곳(toTurn)보다 뛰기 전(fromTurn)에
+   * 더 가까운 값일 때만 되돌린다 — 되돌아오는 방향인지를 보는 것이다.
+   */
   function undoable(v, now) {
     return (
       jump !== null &&
       now - jump.at <= cfg.undoWindowMs &&
       v >= jump.fromTurn - cfg.undoBelow &&
-      v <= jump.fromTurn + cfg.undoAbove
+      v <= jump.fromTurn + cfg.undoAbove &&
+      Math.abs(v - jump.fromTurn) < Math.abs(v - jump.toTurn)
     );
   }
 
@@ -259,26 +273,24 @@ function createFollower(steps, options = {}) {
     if (!streaks.jump.held(cfg.jumpFrames, cfg.jumpMs, now)) return out(false, 'jump-wait', v);
     streaks.jump.clear();
     // 되돌릴 수 있게 어디서 뛰었는지 남긴다 (P8)
-    jump = { fromIndex: index, fromTurn: believed, at: now };
+    jump = { fromIndex: index, fromTurn: believed ?? v, toTurn: v, at: now };
     return move(target, v, 'jump', out);
   }
 
   /** 뒤로 — 무겁게. 밀림·오독은 그대로 두고, 전환·재시작·되돌리기만 이어질 때 믿는다. */
   function backward(v, now, out) {
     streaks.jump.clear();
-    const back = believed - v;
-
-    // P3 — 밀림. 이미 한 단계를 다시 보여주지 않는다. 기준만 낮춘다.
-    if (back <= cfg.pushback) {
-      clearBackward();
-      believed = v;
-      return out(false, 'pushback', v);
-    }
 
     // P8 — 조금 전 크게 건너뛴 게 오독이었다: 건너뛰기 전 위치에 맞는 숫자가 돌아왔다
     const undone = tryUndo(v, now, out);
     if (undone) return undone;
 
+    // ★ P5·P6을 P3(밀림)보다 **먼저** 본다.
+    //
+    // 초반 재시작이 제일 흔한데(턴 3에서 다시 시작), 3 → 0은 뒤로 3턴이라 밀림 조건에도
+    // 들어맞는다. 밀림을 먼저 보면 기준이 0으로 내려앉고, 그 뒤의 0들은 전부 "앞으로"가
+    // 되어 재시작 이어짐을 아예 못 센다 — 영영 처음으로 못 돌아간다.
+    // 리셋 빌드에서 보스가 턴 3 이하에 죽는 경우(README가 든 상황)도 같은 이유로 갇혔다.
     const s = segmentAt(ranges, index);
     const [, b] = ranges[s];
     const next = ranges[s + 1];
@@ -298,16 +310,30 @@ function createFollower(steps, options = {}) {
       return out(false, 'reset-wait', v);
     }
 
-    // P6 — 재시작: 첫 턴 근처의 숫자가 한참 이어진다 (리셋 빌드는 마지막 라운드에서만 온다).
-    // 재시작도 "크게 뛴 것"으로 기억해 둔다 — 오독이었으면 P8로 되돌린다.
-    const restarting = v <= flow[0].turn + cfg.restartSlack;
+    // P6 — 재시작: 첫 턴 근처의 숫자가 한참 이어진다.
+    // **리셋 빌드는 마지막 라운드에서만.** 앞 라운드에서 작은 숫자는 라운드 전환이지
+    // 재시작이 아니고, 전환은 바로 위 P5가 맡는다. (v가 다음 라운드 첫 턴보다 커서
+    // P5를 빠져나온 경우 — "15"가 "1"로 읽히는 오독 — 를 재시작으로 오해하지 않게)
+    const inLastRound = s === ranges.length - 1;
+    const restarting =
+      (!isResetBuild || inLastRound) &&
+      v <= flow[0].turn + cfg.restartSlack &&
+      forwardFrom(0, v) < index; // 실제로 뒤로 가는 경우에만 — 아니면 셀 이유가 없다
     streaks.restart.tick(restarting, now);
     if (restarting && streaks.restart.held(cfg.restartFrames, cfg.restartMs, now)) {
-      jump = { fromIndex: index, fromTurn: believed, at: now };
+      // 재시작도 "크게 뛴 것"으로 기억해 둔다 — 오독이었으면 P8로 되돌린다
+      jump = { fromIndex: index, fromTurn: believed, toTurn: v, at: now };
       clearBackward();
       return move(forwardFrom(0, v), v, 'restart', out);
     }
     if (restarting) return out(false, 'restart-wait', v);
+
+    // P3 — 밀림. 이미 한 단계를 다시 보여주지 않는다. 기준만 낮춘다.
+    if (believed - v <= cfg.pushback) {
+      clearBackward();
+      believed = v;
+      return out(false, 'pushback', v);
+    }
 
     // P4 — 그 밖의 뒤로는 그대로 둔다 (아마 오독이다)
     return out(false, 'hold', v);
@@ -347,7 +373,7 @@ function createFollower(steps, options = {}) {
       return believed;
     },
     get isReset() {
-      return resetAfter.some(Boolean);
+      return isResetBuild;
     },
   };
 }

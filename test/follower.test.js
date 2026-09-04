@@ -71,8 +71,29 @@ test('이상한 입력에도 죽지 않는다', () => {
 
 test('결과에 왜 그렇게 판단했는지가 남는다', () => {
   const f = createFollower(RUNNING);
-  assert.strictEqual(f.push(strong(4), 0).why, 'first');
+  assert.strictEqual(f.push(strong(4), 0).why, 'forward');
   assert.strictEqual(f.push(strong(5), 100).why, 'forward');
   assert.strictEqual(f.push(strong(3), 200).why, 'pushback');
   assert.strictEqual(f.push(null, 300).why, 'hidden');
+});
+
+test('첫 읽기도 두 단계 이상이면 P7을 거친다', () => {
+  // 손으로 옮긴 직후·앱 시작 직후의 오독 한 프레임에 순간이동하면 안 된다
+  const f = createFollower(RUNNING);
+  assert.strictEqual(f.push(strong(9), 0).index, 0, '두 단계 건너뛰기는 기다린다');
+  assert.strictEqual(f.push(strong(9), 100).index, 0);
+  assert.strictEqual(f.push(strong(9), 200).index, 3);
+
+  const g = createFollower(RUNNING);
+  assert.strictEqual(g.push(strong(4), 0).index, 1, '한 단계는 바로');
+});
+
+test('P7이 기다리는 동안 오독 값이 기준이 되지 않는다', () => {
+  // 기준이 오독으로 잡히면 그 뒤 진짜 턴이 전부 "큰 뒤로"가 되어 영영 갇힌다
+  const f = createFollower(RUNNING);
+  assert.strictEqual(f.push(strong(40), 0).index, 0);
+  assert.strictEqual(f.turn, null, '아직 아무것도 안 믿는다');
+  // 40을 기준으로 삼았다면 3은 "37턴 뒤로"라 갇힌다. 안 삼았으니 평소처럼 한 단계 간다.
+  assert.strictEqual(f.push(strong(3), 100).index, 1);
+  assert.strictEqual(f.turn, 3);
 });

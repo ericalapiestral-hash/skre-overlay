@@ -80,23 +80,32 @@ test('단계 이동은 범위를 벗어나지 않는다', () => {
   assert.strictEqual(e.setIndex(-5), 0);
 });
 
-test('또렷하게 읽힌 턴은 바로 단계를 옮긴다', { skip: !loadFixtures() }, () => {
-  const e = engine();
+test('두 단계 이상 건너뛰는 이동은 몇 프레임 이어져야 한다 (P7)', { skip: !loadFixtures() }, () => {
+  // 0턴 단계에서 8턴이 읽히면 두 단계를 건너뛴다 — 오독 한 프레임에 순간이동하면 안 된다
+  let t = 0;
+  const e = createEngine({ templates: TEMPLATES, now: () => (t += 100) });
+  e.setFlow(GROUPS, {});
   const frame = frameFor(8);
   assert.ok(frame, '표본에 8이 있어야 한다');
 
-  const r = e.feed(frame.gray, frame.w, frame.h);
-  assert.strictEqual(r.turn, 8);
-  assert.ok(r.confidence > 0.86, '표본은 또렷하게 읽혀야 한다');
-  assert.strictEqual(r.index, 2, '8턴이면 2라운드 첫 단계');
-  assert.strictEqual(r.moved, true);
+  const first = e.feed(frame.gray, frame.w, frame.h);
+  assert.strictEqual(first.turn, null, '아직 믿지 않는다');
+  assert.strictEqual(first.index, 0);
+  e.feed(frame.gray, frame.w, frame.h);
+  const third = e.feed(frame.gray, frame.w, frame.h);
+  assert.strictEqual(third.turn, 8);
+  assert.ok(third.confidence > 0.86, '표본은 또렷하게 읽혀야 한다');
+  assert.strictEqual(third.index, 2, '8턴이면 2라운드 첫 단계');
+  assert.strictEqual(third.moved, true);
 });
 
 test('같은 턴이 이어지면 더 움직이지 않는다', { skip: !loadFixtures() }, () => {
-  const e = engine();
+  let t = 0;
+  const e = createEngine({ templates: TEMPLATES, now: () => (t += 100) });
+  e.setFlow(GROUPS, {});
   const frame = frameFor(8);
   assert.ok(frame);
-  e.feed(frame.gray, frame.w, frame.h);
+  for (let i = 0; i < 3; i += 1) e.feed(frame.gray, frame.w, frame.h);
   for (let i = 0; i < 3; i += 1) {
     const r = e.feed(frame.gray, frame.w, frame.h);
     assert.strictEqual(r.moved, false);
@@ -104,15 +113,17 @@ test('같은 턴이 이어지면 더 움직이지 않는다', { skip: !loadFixtu
   }
 });
 
-test('턴이 올라가면 따라 올라간다', { skip: !loadFixtures() }, () => {
-  const e = engine();
+test('턴이 올라가면 한 단계씩은 바로 따라 올라간다', { skip: !loadFixtures() }, () => {
+  let t = 0;
+  const e = createEngine({ templates: TEMPLATES, now: () => (t += 100) });
+  e.setFlow(GROUPS, {});
   const eight = frameFor(8);
   const twelve = frameFor(12);
   assert.ok(eight && twelve);
-  e.feed(eight.gray, eight.w, eight.h);
+  for (let i = 0; i < 3; i += 1) e.feed(eight.gray, eight.w, eight.h);
   const r = e.feed(twelve.gray, twelve.w, twelve.h);
   assert.strictEqual(r.turn, 12);
-  assert.strictEqual(r.index, 3);
+  assert.strictEqual(r.index, 3, '한 단계 이동은 기다리지 않는다');
 });
 
 test('아무것도 없는 화면에서는 자리를 지킨다', () => {
