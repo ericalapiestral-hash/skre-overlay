@@ -4,12 +4,19 @@
 # 메타데이터를 넣는 단계에 wine이 필요해서, 건너뛰면 exe 속성이 "Electron"으로 남는다.
 # 여기서는 windows-latest로 지어 그 문제가 아예 없다.
 #
-# 태그(v*)를 밀면 릴리스까지 올라간다. 그냥 확인만 하려면 Actions에서 손으로 돌리면
-# 되고, 그때는 artifact로만 남는다.
+# 릴리스로 올리려면 Actions에서 손으로 돌리면서 `tag` 를 채운다. 비워 두면 짓기만 하고
+# artifact로 남는다. 태그(v*)를 밀어도 릴리스가 된다 — 다만 이 저장소를 다루는 자동화
+# 세션은 브랜치에만 밀 수 있어서(태그 푸시가 403) 손으로 돌리는 쪽을 주로 쓴다.
+# 태그가 없으면 `gh release create` 가 지금 커밋에 태그를 만들어 붙인다.
 name: 윈도우 빌드
 
 on:
   workflow_dispatch:
+    inputs:
+      tag:
+        description: '릴리스 태그 (비우면 빌드만 하고 릴리스는 안 만든다)'
+        required: false
+        default: ''
   push:
     tags: ['v*']
 
@@ -45,7 +52,7 @@ jobs:
 
   release:
     needs: build-windows
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -58,7 +65,10 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
-          TAG: ${{ github.ref_name }}
+          # 태그를 밀어서 돈 것이면 그 태그, 손으로 돌린 것이면 입력한 태그
+          TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
+          # 손으로 돌릴 때는 태그가 아직 없다 — gh 가 이 커밋에 만들어 붙이게 한다
+          TARGET: ${{ github.sha }}
         run: |
           set -e
           ls -la dist/
@@ -94,6 +104,7 @@ jobs:
           NOTES
           gh release create "$TAG" dist/*.exe \
             --repo "$REPO" \
+            --target "$TARGET" \
             --title "SKRE 오버레이 $TAG — 시험판" \
             --notes-file notes.md \
             --prerelease
