@@ -29,7 +29,7 @@ const state = {
   auto: false,
   /** @type {{displayId:number, fx:number, fy:number, fw:number, fh:number}|null} */
   region: null,
-  tickMs: 600,
+  tickMs: 250,
   /** 마지막으로 잘라 온 화면 — [가르치기]가 쓴다 */
   lastFrame: null,
   stats: null,
@@ -170,15 +170,19 @@ function currentBuild() {
   return state.builds.find((b) => b.id === state.buildId) || null;
 }
 
-/** 엔진에 지금 단계 목록을 알리고, 돌려받은 것을 그린다 */
+/**
+ * 엔진에 지금 보는 빌드를 알리고, 펼쳐진 단계를 돌려받아 그린다.
+ *
+ * 단계 자료는 메인이 들고 있고 여기로는 빌드 id만 넘긴다 — 도감 전체(본문·단계까지)를
+ * 화면으로 나르면 빌드가 수백 개일 때 갱신마다 눈에 띄게 멈칫한다.
+ */
 async function applyFlow({ keepIndex = false } = {}) {
   const build = currentBuild();
-  const groups = build ? build.groups : [];
-  const r = await api.engine.setFlow(groups, state.picks, { keepIndex });
+  const r = await api.engine.setFlow(build ? build.id : '', state.picks, { keepIndex });
   state.steps = r.steps;
   state.index = r.index;
   renderVariants();
-  renderSteps();
+  await renderSteps();
 }
 
 async function selectBuild(id, { save = true } = {}) {
@@ -202,52 +206,58 @@ function renderVariants() {
   const wrap = $('variants');
   const build = currentBuild();
   wrap.replaceChildren();
-  const branched = build ? build.groups.filter((g) => g.variants.length > 1) : [];
-  wrap.classList.toggle('hidden', branched.length === 0);
-  if (branched.length === 0) return;
+  const branches = (build && build.branches) || [];
+  wrap.classList.toggle('hidden', branches.length === 0);
+  if (branches.length === 0) return;
 
-  build.groups.forEach((group, gi) => {
-    if (group.variants.length < 2) return;
-    group.variants.forEach((variant, vi) => {
+  for (const branch of branches) {
+    branch.labels.forEach((label, vi) => {
       const btn = document.createElement('button');
-      btn.textContent = variant.label;
-      btn.className = (state.picks[gi] ?? 0) === vi ? 'on' : '';
+      btn.textContent = label;
+      btn.className = (state.picks[branch.at] ?? 0) === vi ? 'on' : '';
       btn.onclick = async () => {
-        state.picks[gi] = vi;
+        state.picks[branch.at] = vi;
         await applyFlow({ keepIndex: true });
       };
       wrap.appendChild(btn);
     });
-  });
+  }
 }
 
 // ─────────────────────────────── 단계
 
-function renderSteps() {
+/** @type {HTMLElement[]} 그려 둔 단계 줄 — 위치만 바뀔 땐 이것만 손본다 */
+let stepRows = [];
+
+/**
+ * 단계 목록을 처음부터 그린다. 빌드·변형이 바뀔 때만 부른다.
+ *
+ * 단계를 전부 그리고 지금 할 것만 크게 강조한다. 예전엔 앞뒤 몇 개만 보여줬는데,
+ * 그러면 "이 라운드에 뭐가 남았는지"를 볼 수 없어 창을 접었다 폈다 하게 된다.
+ */
+async function renderSteps() {
   const wrap = $('steps');
   const raw = $('raw');
   const build = currentBuild();
   wrap.replaceChildren();
+  stepRows = [];
 
   if (state.steps.length === 0) {
     wrap.classList.add('hidden');
     raw.classList.toggle('hidden', !build);
-    if (build) $('raw-body').textContent = build.body || '(도감 본문이 비어 있어요)';
+    if (build) {
+      // 본문은 필요할 때만 받아 온다 — 도감 전체를 화면으로 나르면 갱신 때마다 멈칫한다
+      $('raw-body').textContent = (await api.catalog.body(build.id)) || '(도감 본문이 비어 있어요)';
+    }
     return;
   }
   raw.classList.add('hidden');
   wrap.classList.remove('hidden');
 
-  state.index = Math.max(0, Math.min(state.index, state.steps.length - 1));
-
-  // 단계를 전부 그리고, 지금 할 것만 크게 강조한다.
-  // 예전엔 앞뒤 몇 개만 보여줬는데, 그러면 "이 라운드에 뭐가 남았는지"를 볼 수 없어
-  // 결국 창을 접었다 폈다 하게 된다. 목록은 스크롤되고 현재 단계로 자동으로 맞춘다.
-  /** @type {HTMLElement|null} */
-  let now = null;
+  const frag = document.createDocumentFragment();
   state.steps.forEach((step, i) => {
     const row = document.createElement('div');
-    row.className = `step${i < state.index ? ' done' : i === state.index ? ' now' : ''}`;
+    row.className = 'step';
 
     const turn = document.createElement('span');
     turn.className = 'turn';
@@ -261,11 +271,28 @@ function renderSteps() {
 
     row.append(turn, act, seg);
     row.onclick = () => jumpTo(i);
-    wrap.appendChild(row);
-    if (i === state.index) now = row;
+    frag.appendChild(row);
+    stepRows.push(row);
   });
+  wrap.appendChild(frag);
+  highlightStep();
+}
 
-  if (now) now.scrollIntoView({ block: 'center' });
+/**
+ * 지금 할 단계만 옮긴다.
+ *
+ * 자동 인식은 주기마다 도는데, 그때마다 줄을 전부 다시 만들면 화면이 깜빡이고
+ * 스크롤이 튄다. 바뀌는 건 표시뿐이라 줄은 그대로 두고 표시만 옮긴다.
+ */
+function highlightStep() {
+  if (stepRows.length === 0) return;
+  state.index = Math.max(0, Math.min(state.index, stepRows.length - 1));
+  stepRows.forEach((row, i) => {
+    const cls = `step${i < state.index ? ' done' : i === state.index ? ' now' : ''}`;
+    if (row.className !== cls) row.className = cls;
+  });
+  const now = stepRows[state.index];
+  if (now) now.scrollIntoView({ block: 'center', behavior: 'instant' });
 }
 
 /**
@@ -276,7 +303,7 @@ function renderSteps() {
 async function jumpTo(i) {
   if (state.steps.length === 0) return;
   state.index = Math.max(0, Math.min(i, state.steps.length - 1));
-  renderSteps();
+  highlightStep();
   await api.engine.setIndex(state.index);
 }
 
@@ -287,9 +314,17 @@ const nav = (delta) => jumpTo(state.index + delta);
 /** @type {MediaStream|null} */
 let media = null;
 let timer = null;
+/** 화면이 한동안 안 올 때를 대비한 안전줄 */
+let watchdog = null;
+/** requestVideoFrameCallback 핸들 */
+let frameHandle = 0;
+/** 마지막으로 인식을 돌린 시각 */
+let lastProcessed = 0;
 let busy = false;
 /** toggleAuto가 비동기라 겹칠 수 있다 — 세대 번호로 늦게 도착한 호출을 무효화한다 */
 let generation = 0;
+/** 회색조 버퍼는 크기가 안 바뀌는 한 다시 만들지 않는다 (프레임마다 버리면 쓰레기만 쌓인다) */
+let grayBuffer = null;
 
 function stopStream() {
   if (media) {
@@ -300,9 +335,65 @@ function stopStream() {
 }
 
 function stopCapture() {
-  if (timer) clearInterval(timer);
+  if (timer) clearTimeout(timer);
   timer = null;
+  if (watchdog) clearInterval(watchdog);
+  watchdog = null;
+  const video = $('cap');
+  if (frameHandle && typeof video.cancelVideoFrameCallback === 'function') {
+    video.cancelVideoFrameCallback(frameHandle);
+  }
+  frameHandle = 0;
   stopStream();
+}
+
+/**
+ * 새 화면이 올 때마다 깨어나되, 인식은 주기마다 한 번만 돌린다.
+ *
+ * 예전엔 setInterval로 시간만 보고 돌렸다. 그러면 캡처가 초당 몇 장 안 올 때
+ * **같은 화면을 두 번 읽는다** — 투표(vote.js)는 그걸 "두 프레임이 같게 읽혔다"로
+ * 세어서, 한 번 잘못 읽은 화면을 확정해 버릴 수 있다. 이제 새 화면이 왔을 때만 센다.
+ */
+function pump() {
+  if (!state.auto) return;
+  const video = $('cap');
+  if (typeof video.requestVideoFrameCallback === 'function') {
+    frameHandle = video.requestVideoFrameCallback(onFrame);
+  } else {
+    timer = setTimeout(onFrame, state.tickMs);
+  }
+}
+
+function onFrame() {
+  frameHandle = 0;
+  timer = null;
+  if (!state.auto) return;
+  const now = performance.now();
+  // 주기보다 자주 오는 화면은 흘려보낸다 (5ms는 흔들림 여유)
+  if (now - lastProcessed >= state.tickMs - 5) {
+    lastProcessed = now;
+    tick();
+  }
+  pump();
+}
+
+/**
+ * 안전줄 — 화면이 한동안 안 오면 그냥 한 번 읽는다.
+ *
+ * requestVideoFrameCallback은 새 화면이 올 때만 부른다. 화면이 안 바뀌는 동안
+ * 캡처가 새 장을 안 보내는 환경이 있는데, 그러면 콜백이 끊기고 **조용히 추적이
+ * 멈춘다.** 오버레이는 그대로 떠 있어서 멈춘 줄도 모른다 — 그게 제일 나쁘다.
+ */
+function startWatchdog() {
+  if (watchdog) clearInterval(watchdog);
+  const gap = Math.max(1000, state.tickMs * 4);
+  watchdog = setInterval(() => {
+    if (!state.auto) return;
+    if (performance.now() - lastProcessed < gap) return;
+    lastProcessed = performance.now();
+    tick();
+    pump(); // 콜백이 끊겼을 수 있으니 다시 건다
+  }, gap);
 }
 
 async function startCapture() {
@@ -311,6 +402,9 @@ async function startCapture() {
   if (!src) throw new Error('영역을 지정했던 모니터를 못 찾았어요 — 턴 영역을 다시 지정해주세요.');
 
   stopStream();
+  // 화면을 통째로 받아 오는 일이라 초당 장수가 곧 시스템 부담이다.
+  // 인식 주기에 맞춰 필요한 만큼만 받는다 (250ms 주기면 초당 5장).
+  const fps = Math.max(4, Math.min(15, Math.round(1000 / state.tickMs) + 1));
   media = await navigator.mediaDevices.getUserMedia(/** @type {any} */ ({
     audio: false,
     video: {
@@ -324,7 +418,7 @@ async function startCapture() {
         maxWidth: src.width,
         minHeight: src.height,
         maxHeight: src.height,
-        maxFrameRate: 10,
+        maxFrameRate: fps,
       },
     },
   }));
@@ -333,16 +427,20 @@ async function startCapture() {
   await video.play();
 }
 
-/** RGBA → 회색조 (표준 휘도식) */
+/** RGBA → 회색조 (표준 휘도식). 버퍼는 크기가 같으면 다시 쓴다 */
 function toGray(rgba, length) {
-  const gray = new Uint8Array(length);
+  if (!grayBuffer || grayBuffer.length !== length) grayBuffer = new Uint8Array(length);
+  const gray = grayBuffer;
   for (let i = 0, p = 0; p < length; i += 4, p += 1) {
     gray[p] = (0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2]) | 0;
   }
   return gray;
 }
 
-/** 지정 영역을 잘라 글자 높이가 96px 근처가 되도록 키운다 */
+/**
+ * 지정 영역을 잘라 인식기가 좋아하는 높이로 키운다.
+ * 목표 높이는 인식기 쪽(CROP_TARGET_HEIGHT)에 있다 — 재는 것과 실제가 어긋나지 않게.
+ */
 function cropFrame() {
   const video = $('cap');
   if (!video.videoWidth || !state.region) return null;
@@ -352,7 +450,7 @@ function cropFrame() {
   const sw = Math.max(4, fw * video.videoWidth);
   const sh = Math.max(4, fh * video.videoHeight);
 
-  const scale = Math.max(1, Math.min(8, 96 / sh));
+  const scale = Math.max(1, Math.min(8, api.tune.cropHeight / sh));
   const canvas = /** @type {HTMLCanvasElement} */ ($('crop'));
   canvas.width = Math.round(sw * scale);
   canvas.height = Math.round(sh * scale);
@@ -386,7 +484,7 @@ async function tick() {
     if (r.turn !== null) $('turn').textContent = `${r.turn}턴`;
     if (r.index !== state.index) {
       state.index = r.index;
-      renderSteps();
+      highlightStep();
     }
     reportStatus(r);
   } catch (e) {
@@ -435,8 +533,9 @@ async function toggleAuto(on) {
       return;
     }
     await api.engine.reset();
-    if (timer) clearInterval(timer);
-    timer = setInterval(tick, state.tickMs);
+    lastProcessed = 0; // 켜자마자 한 장 읽는다 (한 주기를 기다리지 않게)
+    pump();
+    startWatchdog();
     setStatus('인식 중…', 'on');
   } catch (e) {
     if (gen !== generation) return;
@@ -577,10 +676,8 @@ $('tick').addEventListener('input', (e) => {
   state.tickMs = Number(e.target.value);
   $('tick-val').textContent = `${state.tickMs}ms`;
   api.config.set({ tickMs: state.tickMs });
-  if (state.auto) {
-    if (timer) clearInterval(timer);
-    timer = setInterval(tick, state.tickMs);
-  }
+  // 주기는 바로 반영된다. 캡처 장수는 다음에 [자동]을 켤 때 맞춰진다 —
+  // 전투 중에 스트림을 다시 여는 것이 더 손해다.
 });
 $('btn-pick-file').addEventListener('click', async () => {
   const r = await api.catalog.pickFile();
@@ -620,7 +717,7 @@ window.addEventListener('beforeunload', stopCapture);
 (async () => {
   const config = await api.config.get();
   state.region = config.turnRegion || null;
-  state.tickMs = config.tickMs || 600;
+  state.tickMs = config.tickMs || 250;
 
   $('opacity').value = String(config.opacity ?? 88);
   applyOpacity(config.opacity ?? 88);

@@ -2,8 +2,10 @@
 // 이름을 잘못 쓰면 타입 검사에서 걸린다.
 
 interface OverlayApi {
+  tune: { cropHeight: number };
   catalog: {
     load(): Promise<any>;
+    body(id: string): Promise<string>;
     pickFile(): Promise<any>;
     reveal(): Promise<boolean>;
     onUpdated(fn: () => void): () => void;
@@ -20,7 +22,7 @@ interface OverlayApi {
     source(displayId: number): Promise<{ sourceId: string; width: number; height: number } | null>;
   };
   engine: {
-    setFlow(groups: any[], picks: object, opts?: object): Promise<{ steps: any[]; index: number }>;
+    setFlow(buildId: string, picks: object, opts?: object): Promise<{ steps: any[]; index: number }>;
     setIndex(i: number): Promise<number>;
     reset(): Promise<boolean>;
     feed(gray: Uint8Array, w: number, h: number): Promise<any>;

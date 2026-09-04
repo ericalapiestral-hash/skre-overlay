@@ -17,7 +17,13 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const zlib = require('node:zlib');
-const { GRID_W, GRID_H, loadTemplates, readTurn } = require('../src/shared/turnReader');
+const {
+  GRID_W,
+  GRID_H,
+  CROP_TARGET_HEIGHT,
+  loadTemplates,
+  readTurn,
+} = require('../src/shared/turnReader');
 
 const RAW = require('../src/shared/templates.json');
 const FIXTURES = path.join(__dirname, '..', 'test', 'fixtures', 'digits.json.gz');
@@ -47,6 +53,36 @@ function toGrid(rows) {
   return grid;
 }
 
+/**
+ * 이중선형 확대 — 화면(캔버스)이 크롭을 키우는 방식과 같게.
+ *
+ * 표본은 게임에서 보이는 크기 그대로(22·32·44px)라서, 그냥 재면 **앱이 실제로
+ * 인식기에 넣는 것과 다른 것을 재게 된다.** 앱은 인식 전에 CROP_TARGET_HEIGHT
+ * 근처로 키운다 — 벤치도 똑같이 키워야 숫자가 실제와 맞는다.
+ */
+function upscale(gray, w, h, k) {
+  if (k <= 1.01) return { gray, w, h };
+  const W = Math.round(w * k);
+  const H = Math.round(h * k);
+  const out = new Uint8Array(W * H);
+  for (let y = 0; y < H; y += 1) {
+    const sy = Math.min(h - 1.0001, (y + 0.5) / k - 0.5);
+    const y0 = Math.max(0, Math.floor(sy));
+    const y1 = Math.min(h - 1, y0 + 1);
+    const fy = sy - y0;
+    for (let x = 0; x < W; x += 1) {
+      const sx = Math.min(w - 1.0001, (x + 0.5) / k - 0.5);
+      const x0 = Math.max(0, Math.floor(sx));
+      const x1 = Math.min(w - 1, x0 + 1);
+      const fx = sx - x0;
+      const a = gray[y0 * w + x0] * (1 - fx) + gray[y0 * w + x1] * fx;
+      const b = gray[y1 * w + x0] * (1 - fx) + gray[y1 * w + x1] * fx;
+      out[y * W + x] = (a * (1 - fy) + b * fy) | 0;
+    }
+  }
+  return { gray: out, w: W, h: H };
+}
+
 /** 숫자별 템플릿 묶음 */
 function byDigit() {
   const map = new Map();
@@ -60,16 +96,19 @@ function byDigit() {
 /**
  * 성능을 잰다.
  *
- * @param {{holdout?: boolean, useCandidates?: boolean, read?: object,
+ * @param {{holdout?: boolean, useCandidates?: boolean, read?: object, target?: number,
  *          fonts?: string[], heights?: number[], verbose?: boolean}} [opts]
  *   holdout 표본을 그린 폰트의 대조표를 빼고 맞춘다 (기본 true = 처음 보는 폰트 조건)
- * @returns {{total:number, ok:number, unknown:number, wrong:number, misses:string[]}|null}
+ *   target  앱처럼 이 높이 근처로 키워서 읽는다 (0이면 원본 크기 그대로)
+ * @returns {{total:number, ok:number, unknown:number, wrong:number, misses:string[],
+ *            ms:number, msMax:number}|null} ms는 한 장 읽는 데 걸린 시간의 중앙값
  */
 function bench(opts = {}) {
   const data = loadFixtures();
   if (!data) return null;
 
   const holdout = opts.holdout !== false;
+  const target = opts.target === undefined ? CROP_TARGET_HEIGHT : opts.target;
   const samples = data.samples.filter(
     (s) =>
       (!opts.heights || opts.heights.includes(s.height)) &&
@@ -95,10 +134,35 @@ function bench(opts = {}) {
   let unknown = 0;
   let wrong = 0;
   const misses = [];
+  // 한 장 읽는 데 걸리는 시간도 같이 잰다 — 이게 곧 프레임 간격의 하한이다
+  const times = [];
+
+  // 미리 한 번 돌려 JIT를 예열한다 (안 하면 첫 몇 장이 열 배쯤 느리게 나온다)
+  if (samples.length > 0) {
+    const s0 = samples[0];
+    const warm = upscale(
+      new Uint8Array(Buffer.from(s0.gray, 'base64')),
+      s0.w,
+      s0.h,
+      target ? Math.max(1, Math.min(8, target / s0.height)) : 1,
+    );
+    for (let i = 0; i < 20; i += 1) {
+      readTurn(warm.gray, warm.w, warm.h, templatesFor(s0.font), {
+        ...(opts.read || {}),
+        candidates,
+      });
+    }
+  }
 
   for (const s of samples) {
-    const gray = new Uint8Array(Buffer.from(s.gray, 'base64'));
-    const got = readTurn(gray, s.w, s.h, templatesFor(s.font), { ...(opts.read || {}), candidates });
+    const raw = new Uint8Array(Buffer.from(s.gray, 'base64'));
+    const img = target ? upscale(raw, s.w, s.h, Math.max(1, Math.min(8, target / s.height))) : { gray: raw, w: s.w, h: s.h };
+    const started = process.hrtime.bigint();
+    const got = readTurn(img.gray, img.w, img.h, templatesFor(s.font), {
+      ...(opts.read || {}),
+      candidates,
+    });
+    times.push(Number(process.hrtime.bigint() - started) / 1e6);
     const where = `${s.font} ${s.height}px${s.invert ? ' 반전' : ''}`;
     if (!got) {
       unknown += 1;
@@ -111,7 +175,16 @@ function bench(opts = {}) {
     }
   }
 
-  return { total: samples.length, ok, unknown, wrong, misses };
+  times.sort((a, b) => a - b);
+  return {
+    total: samples.length,
+    ok,
+    unknown,
+    wrong,
+    misses,
+    ms: times[times.length >> 1] || 0,
+    msMax: times[Math.min(times.length - 1, Math.floor(times.length * 0.95))] || 0,
+  };
 }
 
 function report(title, r, { showMisses = false } = {}) {
@@ -124,17 +197,16 @@ function report(title, r, { showMisses = false } = {}) {
   console.log(`  맞음     ${r.ok} (${pct(r.ok)})`);
   console.log(`  모르겠음 ${r.unknown} (${pct(r.unknown)})  ← 안전한 실패`);
   console.log(`  틀림     ${r.wrong} (${pct(r.wrong)})  ← 0에 가까워야 한다`);
+  console.log(`  걸린 시간 중앙값 ${r.ms.toFixed(2)}ms · 상위 5% ${r.msMax.toFixed(2)}ms (한 장 읽는 데)`);
   if (!showMisses) return;
   for (const m of r.misses.slice(0, 30)) console.log(`    · ${m}`);
   if (r.misses.length > 30) console.log(`    … 외 ${r.misses.length - 30}건`);
 }
 
-module.exports = { toGrid, byDigit, bench, loadFixtures, report, RAW };
+module.exports = { toGrid, byDigit, upscale, bench, loadFixtures, report, RAW };
 
 if (require.main === module) {
   const verbose = process.argv.includes('--verbose');
-  report('처음 보는 폰트 · 후보 없음', bench({ verbose }), { showMisses: verbose });
-  console.log();
   report('처음 보는 폰트 · 빌드 턴 후보 사용 (실제 앱 조건)', bench({ verbose, useCandidates: true }), {
     showMisses: verbose,
   });
@@ -142,4 +214,8 @@ if (require.main === module) {
   report('가르친 뒤 (그 폰트를 아는 조건)', bench({ holdout: false, useCandidates: true }), {
     showMisses: verbose,
   });
+  console.log();
+  report('참고 — 후보 없이', bench({ verbose }), { showMisses: verbose });
+  console.log();
+  report('참고 — 화면 확대 없이 (원본 크기 그대로)', bench({ useCandidates: true, target: 0 }));
 }

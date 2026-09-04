@@ -6,6 +6,7 @@
 'use strict';
 
 const { contextBridge, ipcRenderer } = require('electron');
+const { CROP_TARGET_HEIGHT } = require('../shared/turnReader');
 
 /** 메인 → 렌더러 알림. 해제 함수를 돌려준다 */
 function on(channel, handler) {
@@ -15,8 +16,12 @@ function on(channel, handler) {
 }
 
 contextBridge.exposeInMainWorld('overlay', {
+  /** 인식기와 맞춰야 하는 값들 — 화면이 제 맘대로 정하면 재는 것과 어긋난다 */
+  tune: { cropHeight: CROP_TARGET_HEIGHT },
   catalog: {
     load: () => ipcRenderer.invoke('catalog:load'),
+    /** 스킬 순서를 못 읽은 빌드의 도감 본문 — 필요할 때만 받아 온다 */
+    body: (id) => ipcRenderer.invoke('catalog:body', id),
     pickFile: () => ipcRenderer.invoke('catalog:pick-file'),
     reveal: () => ipcRenderer.invoke('catalog:reveal'),
     onUpdated: (fn) => on('catalog:updated', fn),
@@ -33,7 +38,7 @@ contextBridge.exposeInMainWorld('overlay', {
     source: (displayId) => ipcRenderer.invoke('capture:source', displayId),
   },
   engine: {
-    setFlow: (groups, picks, opts) => ipcRenderer.invoke('engine:flow', groups, picks, opts),
+    setFlow: (buildId, picks, opts) => ipcRenderer.invoke('engine:flow', buildId, picks, opts),
     setIndex: (i) => ipcRenderer.invoke('engine:index', i),
     reset: () => ipcRenderer.invoke('engine:reset'),
     /** gray는 Uint8Array — 구조적 복제로 넘어간다 (몇 KB라 부담 없다) */

@@ -4,22 +4,50 @@
 // 워커·모델 때문에 앱이 76MB씩 무거워진다. 여기서 가릴 것은 0~9 열 개뿐이라
 // 이진화 → 덩어리 분리 → 크기 정규화 → 템플릿 대조 로 끝난다. 의존성이 없다.
 //
-// 옛 인식기에서 고친 것:
-//  · **양쪽 명암을 모두 시도한다.** 예전엔 "화면에서 적은 쪽이 글자"라고 단정해서,
+// 정확도를 위해 고친 것:
+//  · **명암 두 방향을 모두 시도한다.** 예전엔 "화면에서 적은 쪽이 글자"라고 단정해서,
 //    잘라 온 영역에 밝은 패널이 조금만 걸쳐도 글자와 배경이 뒤집혔다.
-//  · **글자 줄을 찾아낸다.** 예전엔 제일 큰 덩어리 높이의 55%로 걸렀는데,
-//    UI 테두리 하나가 섞이면 진짜 숫자가 전부 걸러졌다. 이제는 세로로 겹치는
-//    덩어리끼리 묶어 "한 줄"을 만들고 그중 가장 그럴듯한 줄만 본다.
-//  · **숫자별 점수를 그대로 내보낸다.** 예전엔 애매하면 통째로 버렸다. 이제는
-//    점수표를 넘겨서, 빌드가 아는 턴 숫자(후보)로 애매한 자리를 맞출 수 있다.
+//  · **자릿수를 더 많이 찾은 쪽이 이긴다.** 점수만 보면 "60"이 한 덩어리로 잡힌 쪽이
+//    경쟁자가 없어 마진이 커서 이겼고, 그래서 7 하나로 읽혔다.
+//  · **붙어 버린 숫자를 나눈다.** 나눌지 말지는 어림짐작이 아니라 인식 점수로 정한다.
+//  · **구멍의 위치까지 본다.** 개수만 보면 6(아래)·9(위)·0(가운데)를 못 가른다.
+//  · **점수표를 그대로 내보낸다.** 빌드가 아는 턴(후보)으로 애매한 자리를 맞출 수 있게.
+//
+// 속도를 위해 고친 것 — 게임과 CPU를 나눠 쓰는 도구라 프레임당 비용이 곧 프레임 간격이다:
+//  · **격자를 비트로 다룬다.** 336칸을 32비트 낱말 11개에 담아, 겹치는 칸 세기를
+//    비트 AND + popcount로 한다. 칸마다 도는 것보다 열 배 넘게 빠르다.
+//  · **부풀린 모양을 미리 만들어 둔다.** 예전엔 대조 한 번마다 양쪽을 새로 부풀렸다 —
+//    템플릿이 130개니 같은 계산을 프레임마다 260번 다시 했다. 여기가 전체의 90%였다.
+//  · **상한으로 가지친다.** 획 수 차이만 봐도 넘을 수 없는 점수가 정해지므로, 그 숫자의
+//    현재 1등을 못 넘길 템플릿은 계산 자체를 건너뛴다. 결과는 조금도 달라지지 않는다.
+//  · **덩어리를 라벨 지도로 다룬다.** 픽셀 목록을 만들지 않아 프레임마다 생기는
+//    쓰레기가 거의 없다.
 //
 //   const templates = loadTemplates(require('./templates.json'));
 //   const got = readTurn(gray, w, h, templates, { candidates: [0, 4, 8] });
 'use strict';
 
+/**
+ * 잘라 온 턴 영역을 이 높이(px) 근처로 키워서 읽는다.
+ *
+ * 크게 키울수록 좋을 것 같지만 아니다. 실제 폰트 792장으로 재 보면
+ *   확대 안 함  맞음 98.9% · 틀림 0.8%
+ *   48px       맞음 99.4% · 틀림 0.6%
+ *   **64px       맞음 99.7% · 틀림 0.3%**   ← 여기가 제일 좋다
+ *   96px       맞음 99.2% · 틀림 0.8%   (게다가 1.75배 느리다)
+ * 너무 키우면 부드럽게 늘어나는 과정에서 옆 숫자와 획이 붙어 자릿수를 잃는다.
+ *
+ * 화면(캡처)과 벤치가 같은 값을 써야 재는 것과 실제가 어긋나지 않는다 —
+ * 그래서 여기 한 곳에만 둔다.
+ */
+const CROP_TARGET_HEIGHT = 64;
+
 /** 템플릿 격자 크기 — 숫자 하나를 이 크기로 줄여 맞춘다 */
 const GRID_W = 14;
 const GRID_H = 24;
+const GRID_N = GRID_W * GRID_H;
+/** 격자 한 장을 담는 32비트 낱말 수 */
+const WORDS = Math.ceil(GRID_N / 32);
 
 // ─────────────────────────────── 이진화
 
@@ -65,12 +93,13 @@ function otsuThreshold(gray) {
 /**
  * 글자를 1, 배경을 0으로 만든다.
  * @param {boolean} bright true면 밝은 쪽을 글자로 본다
+ * @param {number} [threshold] 미리 구해 둔 문턱값 (두 방향을 볼 때 Otsu를 두 번 돌리지 않게)
  */
-function binarize(gray, w, h, bright) {
-  const threshold = otsuThreshold(gray);
+function binarize(gray, w, h, bright, threshold) {
+  const t = threshold === undefined ? otsuThreshold(gray) : threshold;
   const bin = new Uint8Array(w * h);
   for (let i = 0; i < gray.length; i += 1) {
-    bin[i] = gray[i] > threshold === bright ? 1 : 0;
+    bin[i] = gray[i] > t === bright ? 1 : 0;
   }
   return bin;
 }
@@ -78,32 +107,45 @@ function binarize(gray, w, h, bright) {
 // ─────────────────────────────── 덩어리 나누기
 
 /**
+ * @typedef {{label: number, labels: Int32Array, minX: number, minY: number,
+ *            maxX: number, maxY: number, w: number, h: number, count: number}} Box
+ */
+
+/**
  * 붙어 있는 픽셀을 하나의 덩어리로 묶는다 (8방향).
  * 안티에일리어싱으로 획이 살짝 끊겨도 대각선으로 이어 주려고 8방향을 쓴다.
+ *
+ * 픽셀 목록 대신 **라벨 지도**를 만든다. 목록을 만들면 덩어리마다 수천 개짜리 배열이
+ * 프레임마다 생겼다가 버려진다 — 지도는 한 장이면 되고, 나중에 잘라 낼 때 그 자리만 훑으면 된다.
+ *
+ * @returns {Box[]}
  */
 function components(bin, w, h) {
-  const seen = new Uint8Array(w * h);
-  const found = [];
-  const stack = [];
+  const labels = new Int32Array(w * h); // 0 = 아직 없음, 1부터 덩어리 번호
+  const stack = new Int32Array(bin.length);
+  const boxes = [];
 
   for (let start = 0; start < bin.length; start += 1) {
-    if (!bin[start] || seen[start]) continue;
+    if (!bin[start] || labels[start] !== 0) continue;
 
-    stack.length = 0;
-    stack.push(start);
-    seen[start] = 1;
+    const label = boxes.length + 1;
+    let sp = 0;
+    stack[sp] = start;
+    sp += 1;
+    labels[start] = label;
 
     let minX = w;
     let maxX = -1;
     let minY = h;
     let maxY = -1;
-    const pixels = [];
+    let count = 0;
 
-    while (stack.length > 0) {
-      const p = stack.pop();
+    while (sp > 0) {
+      sp -= 1;
+      const p = stack[sp];
       const x = p % w;
       const y = (p / w) | 0;
-      pixels.push(p);
+      count += 1;
       if (x < minX) minX = x;
       if (x > maxX) maxX = x;
       if (y < minY) minY = y;
@@ -112,21 +154,33 @@ function components(bin, w, h) {
       for (let dy = -1; dy <= 1; dy += 1) {
         const ny = y + dy;
         if (ny < 0 || ny >= h) continue;
+        const row = ny * w;
         for (let dx = -1; dx <= 1; dx += 1) {
           const nx = x + dx;
           if (nx < 0 || nx >= w) continue;
-          const q = ny * w + nx;
-          if (bin[q] && !seen[q]) {
-            seen[q] = 1;
-            stack.push(q);
+          const q = row + nx;
+          if (bin[q] && labels[q] === 0) {
+            labels[q] = label;
+            stack[sp] = q;
+            sp += 1;
           }
         }
       }
     }
 
-    found.push({ minX, minY, maxX, maxY, w: maxX - minX + 1, h: maxY - minY + 1, pixels });
+    boxes.push({
+      label,
+      labels,
+      minX,
+      minY,
+      maxX,
+      maxY,
+      w: maxX - minX + 1,
+      h: maxY - minY + 1,
+      count,
+    });
   }
-  return found;
+  return boxes;
 }
 
 /**
@@ -138,29 +192,49 @@ function components(bin, w, h) {
  */
 function looksLikeDigit(c, imageH, maxDigits = 3) {
   if (c.h < 5 || c.w < 2) return false;
-  if (c.pixels.length < 6) return false;
+  if (c.count < 6) return false;
   if (c.h > imageH * 0.98 && c.w > c.h * 1.5) return false; // 가로 테두리
   if (c.w > c.h * maxDigits * 0.85) return false; // 자릿수를 넘게 긴 것은 글자가 아니다
-  const fill = c.pixels.length / (c.w * c.h);
+  const fill = c.count / (c.w * c.h);
   if (fill > 0.92 && c.w / c.h > 0.45) return false; // 꽉 찬 네모 (아이콘·배경 조각)
   return true;
 }
 
-/** 픽셀 목록으로 덩어리 하나를 다시 만든다 */
-function boxFrom(pixels, w) {
-  let minX = Infinity;
+/**
+ * 덩어리에서 가로 [x0, x1) 구간만 떼어 낸다 (x는 덩어리 왼쪽 기준).
+ * @returns {Box|null} 남는 게 거의 없으면 null
+ */
+function sliceBox(box, w, x0, x1) {
+  const { labels, label } = box;
+  let minX = box.maxX + 1;
   let maxX = -1;
-  let minY = Infinity;
+  let minY = box.maxY + 1;
   let maxY = -1;
-  for (const p of pixels) {
-    const x = p % w;
-    const y = (p / w) | 0;
-    if (x < minX) minX = x;
-    if (x > maxX) maxX = x;
-    if (y < minY) minY = y;
-    if (y > maxY) maxY = y;
+  let count = 0;
+
+  for (let y = box.minY; y <= box.maxY; y += 1) {
+    const row = y * w;
+    for (let x = box.minX + x0; x < box.minX + x1; x += 1) {
+      if (labels[row + x] !== label) continue;
+      count += 1;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
   }
-  return { minX, minY, maxX, maxY, w: maxX - minX + 1, h: maxY - minY + 1, pixels };
+  if (count < 6) return null;
+  return {
+    label,
+    labels,
+    minX,
+    minY,
+    maxX,
+    maxY,
+    w: maxX - minX + 1,
+    h: maxY - minY + 1,
+    count,
+  };
 }
 
 /**
@@ -172,21 +246,27 @@ function boxFrom(pixels, w) {
  *
  * 세로줄마다 글자 픽셀 수를 세어, 균등 분할 자리 근처에서 **제일 얇은 곳**을 자른다.
  *
- * @returns {Array|null} 나눌 수 없으면 null
+ * @returns {Box[]|null} 나눌 수 없으면 null
  */
-function splitComponent(comp, w, k) {
-  if (k < 2 || comp.w < k * 3) return null;
+function splitComponent(box, w, k) {
+  if (k < 2 || box.w < k * 3) return null;
 
-  const cols = new Uint32Array(comp.w);
-  for (const p of comp.pixels) cols[(p % w) - comp.minX] += 1;
+  const { labels, label } = box;
+  const cols = new Uint32Array(box.w);
+  for (let y = box.minY; y <= box.maxY; y += 1) {
+    const row = y * w;
+    for (let x = 0; x < box.w; x += 1) {
+      if (labels[row + box.minX + x] === label) cols[x] += 1;
+    }
+  }
 
   const cuts = [];
   for (let i = 1; i < k; i += 1) {
-    const ideal = Math.round((comp.w * i) / k);
-    const span = Math.max(1, Math.round(comp.w / (k * 3)));
+    const ideal = Math.round((box.w * i) / k);
+    const span = Math.max(1, Math.round(box.w / (k * 3)));
     let best = -1;
     let bestVal = Infinity;
-    for (let x = Math.max(1, ideal - span); x <= Math.min(comp.w - 2, ideal + span); x += 1) {
+    for (let x = Math.max(1, ideal - span); x <= Math.min(box.w - 2, ideal + span); x += 1) {
       // 얇은 곳 우선, 같으면 균등 분할에 가까운 쪽
       const v = cols[x] * 1000 + Math.abs(x - ideal);
       if (v < bestVal) {
@@ -199,17 +279,12 @@ function splitComponent(comp, w, k) {
   }
   cuts.sort((a, b) => a - b);
 
-  const bounds = [0, ...cuts, comp.w];
+  const bounds = [0, ...cuts, box.w];
   const parts = [];
   for (let i = 0; i + 1 < bounds.length; i += 1) {
-    const lo = bounds[i];
-    const hi = bounds[i + 1];
-    const pixels = comp.pixels.filter((p) => {
-      const x = (p % w) - comp.minX;
-      return x >= lo && x < hi;
-    });
-    if (pixels.length < 6) return null;
-    parts.push(boxFrom(pixels, w));
+    const part = sliceBox(box, w, bounds[i], bounds[i + 1]);
+    if (!part) return null;
+    parts.push(part);
   }
   return parts;
 }
@@ -220,24 +295,24 @@ function splitComponent(comp, w, k) {
  */
 function textLines(comps) {
   const sorted = [...comps].sort((a, b) => a.minY - b.minY);
-  /** @type {Array<Array<typeof comps[0]>>} */
+  /** @type {Array<{items: Box[], top: number, bottom: number}>} */
   const lines = [];
 
   for (const c of sorted) {
     let placed = false;
     for (const line of lines) {
-      const top = Math.min(...line.map((x) => x.minY));
-      const bottom = Math.max(...line.map((x) => x.maxY));
-      const overlap = Math.min(bottom, c.maxY) - Math.max(top, c.minY) + 1;
-      if (overlap > 0 && overlap >= Math.min(bottom - top + 1, c.h) * 0.5) {
-        line.push(c);
+      const overlap = Math.min(line.bottom, c.maxY) - Math.max(line.top, c.minY) + 1;
+      if (overlap > 0 && overlap >= Math.min(line.bottom - line.top + 1, c.h) * 0.5) {
+        line.items.push(c);
+        if (c.minY < line.top) line.top = c.minY;
+        if (c.maxY > line.bottom) line.bottom = c.maxY;
         placed = true;
         break;
       }
     }
-    if (!placed) lines.push([c]);
+    if (!placed) lines.push({ items: [c], top: c.minY, bottom: c.maxY });
   }
-  return lines;
+  return lines.map((l) => l.items);
 }
 
 /**
@@ -280,7 +355,7 @@ function digitBoxes(comps, imageH, maxDigits = 3) {
   let bestArea = -1;
   for (let i = 0; i + maxDigits <= line.length; i += 1) {
     let area = 0;
-    for (let j = i; j < i + maxDigits; j += 1) area += line[j].pixels.length;
+    for (let j = i; j < i + maxDigits; j += 1) area += line[j].count;
     if (area > bestArea) {
       bestArea = area;
       bestAt = i;
@@ -292,14 +367,17 @@ function digitBoxes(comps, imageH, maxDigits = 3) {
 // ─────────────────────────────── 크기 맞추기
 
 /** 덩어리만 잘라낸 작은 비트맵 */
-function cropBitmap(comp, w) {
-  const data = new Uint8Array(comp.w * comp.h);
-  for (const p of comp.pixels) {
-    const x = (p % w) - comp.minX;
-    const y = ((p / w) | 0) - comp.minY;
-    data[y * comp.w + x] = 1;
+function cropBitmap(box, w) {
+  const { labels, label } = box;
+  const data = new Uint8Array(box.w * box.h);
+  for (let y = 0; y < box.h; y += 1) {
+    const src = (box.minY + y) * w + box.minX;
+    const dst = y * box.w;
+    for (let x = 0; x < box.w; x += 1) {
+      if (labels[src + x] === label) data[dst + x] = 1;
+    }
   }
-  return { data, w: comp.w, h: comp.h };
+  return { data, w: box.w, h: box.h };
 }
 
 /**
@@ -313,7 +391,7 @@ function normalize(bmp) {
   const offX = Math.floor((GRID_W - dw) / 2);
   const offY = Math.floor((GRID_H - dh) / 2);
 
-  const grid = new Uint8Array(GRID_W * GRID_H);
+  const grid = new Uint8Array(GRID_N);
   for (let y = 0; y < dh; y += 1) {
     const sy0 = Math.floor((y * bmp.h) / dh);
     const sy1 = Math.max(sy0 + 1, Math.floor(((y + 1) * bmp.h) / dh));
@@ -339,60 +417,85 @@ function normalize(bmp) {
 
 /** 한 칸씩 부풀린다 — 획 굵기가 조금 달라도 겹치게 */
 function dilate(grid) {
-  const out = new Uint8Array(grid.length);
+  const out = new Uint8Array(GRID_N);
   for (let y = 0; y < GRID_H; y += 1) {
     for (let x = 0; x < GRID_W; x += 1) {
       if (!grid[y * GRID_W + x]) continue;
-      for (let dy = -1; dy <= 1; dy += 1) {
-        const ny = y + dy;
-        if (ny < 0 || ny >= GRID_H) continue;
-        for (let dx = -1; dx <= 1; dx += 1) {
-          const nx = x + dx;
-          if (nx < 0 || nx >= GRID_W) continue;
-          out[ny * GRID_W + nx] = 1;
-        }
+      const y0 = y > 0 ? y - 1 : 0;
+      const y1 = y < GRID_H - 1 ? y + 1 : GRID_H - 1;
+      const x0 = x > 0 ? x - 1 : 0;
+      const x1 = x < GRID_W - 1 ? x + 1 : GRID_W - 1;
+      for (let ny = y0; ny <= y1; ny += 1) {
+        for (let nx = x0; nx <= x1; nx += 1) out[ny * GRID_W + nx] = 1;
       }
     }
   }
   return out;
 }
 
+/** 켜진 비트 개수 */
+function popcount(v) {
+  v -= (v >>> 1) & 0x55555555;
+  v = (v & 0x33333333) + ((v >>> 2) & 0x33333333);
+  v = (v + (v >>> 4)) & 0x0f0f0f0f;
+  return (v * 0x01010101) >>> 24;
+}
+
+function pack(grid) {
+  const bits = new Uint32Array(WORDS);
+  for (let i = 0; i < GRID_N; i += 1) {
+    if (grid[i]) bits[i >>> 5] |= 1 << (i & 31);
+  }
+  return bits;
+}
+
 /**
- * 닮은 정도 0~1. 두 가지를 반씩 섞는다.
+ * 대조에 바로 쓸 수 있게 미리 갈아 둔 모양.
+ *
+ * 부풀린 형태(dil)를 여기서 한 번만 만든다. 예전엔 대조 한 번마다 양쪽을 새로
+ * 부풀렸는데, 템플릿이 130개라 같은 계산을 프레임마다 260번 되풀이했다.
+ *
+ * @typedef {{bits: Uint32Array, dil: Uint32Array, on: number,
+ *            hole: {count: number, y: number}}} Shape
+ * @returns {Shape}
+ */
+function makeShape(grid) {
+  const bits = pack(grid);
+  let on = 0;
+  for (let i = 0; i < WORDS; i += 1) on += popcount(bits[i]);
+  return { bits, dil: pack(dilate(grid)), on, hole: holeInfo(grid) };
+}
+
+/**
+ * 닮은 정도 0~1. 두 가지를 섞는다.
  *  · 딱 겹치는 비율(자카드) — 숫자끼리 구분은 잘 되지만 획 굵기 차이에 약하다
  *  · 한 칸 부풀린 뒤 서로 덮는 비율 — 굵기에 너그럽지만 뭐든 비슷해 보인다
  * 하나만 쓰면 한쪽으로 치우쳐 폰트가 바뀔 때 못 읽거나 아무거나 읽는다.
  */
-function similarity(a, b, exactWeight = 0.5) {
-  let both = 0;
-  let either = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i] && b[i]) both += 1;
-    if (a[i] || b[i]) either += 1;
-  }
-  if (either === 0) return 0;
-  const exact = both / either;
+function similarityOf(a, b, exactWeight) {
+  if (a.on === 0 || b.on === 0) return 0;
 
-  const da = dilate(a);
-  const db = dilate(b);
-  let aOn = 0;
-  let bOn = 0;
+  let both = 0;
   let aIn = 0;
   let bIn = 0;
-  for (let i = 0; i < a.length; i += 1) {
-    if (a[i]) {
-      aOn += 1;
-      if (db[i]) aIn += 1;
-    }
-    if (b[i]) {
-      bOn += 1;
-      if (da[i]) bIn += 1;
-    }
+  for (let i = 0; i < WORDS; i += 1) {
+    const av = a.bits[i];
+    const bv = b.bits[i];
+    both += popcount(av & bv);
+    aIn += popcount(av & b.dil[i]);
+    bIn += popcount(bv & a.dil[i]);
   }
-  if (aOn === 0 || bOn === 0) return 0;
-  const loose = (aIn / aOn + bIn / bOn) / 2;
+  const either = a.on + b.on - both;
+  if (either === 0) return 0;
 
+  const exact = both / either;
+  const loose = (aIn / a.on + bIn / b.on) / 2;
   return exact * exactWeight + loose * (1 - exactWeight);
+}
+
+/** 격자 두 장의 닮은 정도 (도구·시험용 — 프레임마다 도는 길에서는 Shape를 쓴다) */
+function similarity(a, b, exactWeight = 0.5) {
+  return similarityOf(makeShape(a), makeShape(b), exactWeight);
 }
 
 /**
@@ -405,14 +508,16 @@ function similarity(a, b, exactWeight = 0.5) {
  * @returns {{count: number, y: number}} y는 구멍 픽셀의 세로 중심(0~1), 구멍이 없으면 -1
  */
 function holeInfo(grid) {
-  const outside = new Uint8Array(grid.length);
-  const stack = [];
+  const outside = new Uint8Array(GRID_N);
+  const stack = new Int32Array(GRID_N);
+  let sp = 0;
   const push = (x, y) => {
     if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return;
     const i = y * GRID_W + x;
     if (grid[i] || outside[i]) return;
     outside[i] = 1;
-    stack.push(i);
+    stack[sp] = i;
+    sp += 1;
   };
 
   for (let x = 0; x < GRID_W; x += 1) {
@@ -423,26 +528,31 @@ function holeInfo(grid) {
     push(0, y);
     push(GRID_W - 1, y);
   }
-  while (stack.length > 0) {
-    const p = stack.pop();
-    push((p % GRID_W) - 1, (p / GRID_W) | 0);
-    push((p % GRID_W) + 1, (p / GRID_W) | 0);
-    push(p % GRID_W, ((p / GRID_W) | 0) - 1);
-    push(p % GRID_W, ((p / GRID_W) | 0) + 1);
+  while (sp > 0) {
+    sp -= 1;
+    const p = stack[sp];
+    const x = p % GRID_W;
+    const y = (p / GRID_W) | 0;
+    push(x - 1, y);
+    push(x + 1, y);
+    push(x, y - 1);
+    push(x, y + 1);
   }
 
-  const seen = new Uint8Array(grid.length);
+  const seen = new Uint8Array(GRID_N);
   let holes = 0;
   let sumY = 0;
   let count = 0;
-  for (let start = 0; start < grid.length; start += 1) {
+  for (let start = 0; start < GRID_N; start += 1) {
     if (grid[start] || outside[start] || seen[start]) continue;
     holes += 1;
-    stack.length = 0;
-    stack.push(start);
+    sp = 0;
+    stack[sp] = start;
+    sp += 1;
     seen[start] = 1;
-    while (stack.length > 0) {
-      const p = /** @type {number} */ (stack.pop());
+    while (sp > 0) {
+      sp -= 1;
+      const p = stack[sp];
       const x = p % GRID_W;
       const y = (p / GRID_W) | 0;
       sumY += y;
@@ -452,7 +562,8 @@ function holeInfo(grid) {
         const q = ny * GRID_W + nx;
         if (grid[q] || outside[q] || seen[q]) return;
         seen[q] = 1;
-        stack.push(q);
+        stack[sp] = q;
+        sp += 1;
       };
       step(x - 1, y);
       step(x + 1, y);
@@ -476,14 +587,15 @@ function holeCount(grid) {
 function loadTemplates(json, { weight = 1 } = {}) {
   const list = (json && json.templates) || [];
   return list.map((t) => {
-    const grid = new Uint8Array(GRID_W * GRID_H);
+    const grid = new Uint8Array(GRID_N);
     (t.rows || []).forEach((row, y) => {
       if (y >= GRID_H) return;
       for (let x = 0; x < row.length && x < GRID_W; x += 1) {
         if (row[x] !== '0' && row[x] !== ' ') grid[y * GRID_W + x] = 1;
       }
     });
-    return { digit: t.d, grid, hole: holeInfo(grid), weight: t.weight ?? weight };
+    const shape = makeShape(grid);
+    return { digit: t.d, grid, shape, hole: shape.hole, weight: t.weight ?? weight };
   });
 }
 
@@ -515,24 +627,61 @@ const MATCH = {
   splitCost: 0.02,
 };
 
-/** 격자 하나에 대한 0~9 점수표 */
-function scoreGrid(grid, templates, params = MATCH) {
-  const hole = holeInfo(grid);
-  const perDigit = new Array(10).fill(0);
-  for (const t of templates) {
-    let s = similarity(grid, t.grid, params.exactWeight ?? 0.5) * (t.weight ?? 1);
+/**
+ * 이진화 문턱값을 Otsu 값에서 이만큼씩 옮겨 가며 본다. 기본은 **한 번만**.
+ *
+ * 여러 번 보면 나을 것 같아 넣었다가 재 보고 뺐다. 크롭을 CROP_TARGET_HEIGHT로
+ * 키운 뒤에는 Otsu 한 번이 실제 폰트 792장을 **전부** 맞히고(오독 0), 세 번 보면
+ * 오히려 2장을 틀린다 — 다른 문턱값에서 나온 그럴듯한 오답이 "자릿수가 더 많다"는
+ * 규칙을 타고 이기기 때문이다. 게다가 세 번은 3배 느리다 (0.7ms → 2.3ms).
+ *
+ * 구조는 남겨 둔다 — 게임 화면이 유난히 흐린 경우를 다시 재 보고 싶을 때
+ * `readTurn(..., { thresholdOffsets: [0, -8, 8] })` 로 바로 비교할 수 있게.
+ */
+const THRESHOLD_OFFSETS = [0];
 
-    const diff = Math.abs(t.hole.count - hole.count);
-    if (diff === 1) s *= params.hole1;
-    else if (diff >= 2) s *= params.hole2;
-    else if (hole.count > 0 && t.hole.y >= 0 && hole.y >= 0) {
+/**
+ * 모양 하나에 대한 0~9 점수표.
+ *
+ * 템플릿을 다 도는 대신 **넘을 수 없는 상한**으로 가지친다. 자카드는 획 수 비율을,
+ * 부풀린 쪽은 1을 넘지 못하므로, 구멍 감점까지 곱하면 그 템플릿이 낼 수 있는
+ * 최대 점수가 정해진다. 그게 그 숫자의 현재 1등보다 낮으면 계산할 이유가 없다.
+ * 결과는 전부 도는 것과 **한 자리도 다르지 않다.**
+ */
+function scoreShape(shape, templates, params = MATCH) {
+  const exactWeight = params.exactWeight ?? 0.5;
+  const perDigit = new Array(10).fill(0);
+  if (shape.on === 0) return perDigit;
+
+  for (let i = 0; i < templates.length; i += 1) {
+    const t = templates[i];
+    const ts = t.shape;
+
+    const diff = Math.abs(ts.hole.count - shape.hole.count);
+    let penalty = 1;
+    if (diff === 1) penalty = params.hole1;
+    else if (diff >= 2) penalty = params.hole2;
+    else if (shape.hole.count > 0 && ts.hole.y >= 0 && shape.hole.y >= 0) {
       // 개수가 같으면 위치를 본다 — 6(아래) · 9(위) · 0(가운데)를 갈라 준다
-      s *= 1 - Math.min(1, Math.abs(t.hole.y - hole.y) * 2) * params.holeY;
+      penalty = 1 - Math.min(1, Math.abs(ts.hole.y - shape.hole.y) * 2) * params.holeY;
     }
 
-    if (s > perDigit[t.digit]) perDigit[t.digit] = Math.min(1, s);
+    const w = t.weight ?? 1;
+    // 상한: 자카드 ≤ 작은쪽/큰쪽, 부풀린 쪽 ≤ 1
+    const ratio =
+      shape.on < ts.on ? shape.on / ts.on : ts.on / shape.on;
+    const ceiling = (exactWeight * ratio + (1 - exactWeight)) * w * penalty;
+    if (ceiling <= perDigit[t.digit]) continue;
+
+    const s = similarityOf(shape, ts, exactWeight) * w * penalty;
+    if (s > perDigit[t.digit]) perDigit[t.digit] = s > 1 ? 1 : s;
   }
   return perDigit;
+}
+
+/** 격자 하나에 대한 0~9 점수표 (도구·시험용) */
+function scoreGrid(grid, templates, params = MATCH) {
+  return scoreShape(makeShape(grid), templates, params);
 }
 
 /**
@@ -593,32 +742,36 @@ function bestValue(scores, opts = {}) {
   // 예전엔 "후보에 있으니 맞겠지" 하고 확신 없는 읽기를 그대로 통과시켰다.
   // 한 자리 숫자에서는 0·4·7·8·9가 전부 후보라 8을 0으로 읽고도 자신 있게
   // 넘어갔다 — 오독의 제일 큰 원인이었다. 후보 안이라고 확실해지지는 않는다.
-  const ranked = candidates
-    .map((value) => {
-      const ds = String(value).split('').map(Number);
-      let sum = 0;
-      let worst = 1;
-      for (let i = 0; i < ds.length; i += 1) {
-        const s = scores[i][ds[i]];
-        sum += s;
-        if (s < worst) worst = s;
-      }
-      return { value, digits: ds, total: sum, confidence: worst };
-    })
-    .sort((a, b) => b.total - a.total);
+  let top = null;
+  let runnerUpTotal = 0;
+  for (const value of candidates) {
+    const ds = String(value).split('').map(Number);
+    let sum = 0;
+    let worst = 1;
+    for (let i = 0; i < ds.length; i += 1) {
+      const s = scores[i][ds[i]];
+      sum += s;
+      if (s < worst) worst = s;
+    }
+    if (!top || sum > top.total) {
+      if (top) runnerUpTotal = top.total;
+      top = { value, digits: ds, total: sum, confidence: worst };
+    } else if (sum > runnerUpTotal) {
+      runnerUpTotal = sum;
+    }
+  }
 
-  const top = ranked[0];
-  const runnerUp = ranked[1];
-  const gap = runnerUp ? (top.total - runnerUp.total) / scores.length : 1;
-
-  if (top.confidence >= minScore && gap >= minMargin) {
-    return {
-      value: top.value,
-      digits: top.digits,
-      confidence: top.confidence,
-      margin: gap,
-      snapped: top.value !== raw,
-    };
+  if (top) {
+    const gap = candidates.length > 1 ? (top.total - runnerUpTotal) / scores.length : 1;
+    if (top.confidence >= minScore && gap >= minMargin) {
+      return {
+        value: top.value,
+        digits: top.digits,
+        confidence: top.confidence,
+        margin: gap,
+        snapped: top.value !== raw,
+      };
+    }
   }
 
   // 후보 중에는 마땅한 게 없는데 원본은 아주 확실하다 — 빌드에 없는 턴이 화면에
@@ -630,105 +783,137 @@ function bestValue(scores, opts = {}) {
 }
 
 /**
- * 잘라 온 턴 숫자 영역에서 숫자를 읽는다.
- *
- * 밝은 글자·어두운 글자 두 경우를 모두 시도해 더 확실한 쪽을 쓴다.
- * 예전엔 "화면에서 적은 쪽이 글자"라고 단정해서, 영역에 밝은 패널이 조금만
- * 걸쳐도 통째로 뒤집혀 아무것도 못 읽었다.
- *
- * @param {Uint8Array} gray 회색조 픽셀 (길이 w*h)
- * @param {{minScore?:number, minMargin?:number, maxDigits?:number, candidates?:number[]}} [opts]
- * @returns {{value:number, confidence:number, margin:number, digits:number[],
- *            bright:boolean, snapped:boolean, boxes:number}|null}
- */
-/**
  * 덩어리 하나를 그대로 볼지, 2~3조각으로 나눠 볼지 인식기가 직접 고르게 한다.
  *
  * 어림짐작으로 "폭이 넓으면 나눈다"고 하면 폰트마다 어긋난다. 대신 나눠 본 뒤
  * **어느 쪽이 더 숫자답게 읽히는지** 점수로 비교한다. 나누면 자릿수가 늘어나니
  * 확실히 나을 때만 나누도록 안 나눈 쪽에 약간의 가산점을 준다.
+ *
+ * 고른 조각들의 점수표를 그대로 돌려준다 — 뒤에서 다시 계산하지 않게.
+ * @returns {{boxes: Box[], scores: number[][]}}
  */
-function expandBox(box, w, templates, maxDigits, params) {
+function expandBox(box, w, templates, maxDigits, params = MATCH) {
   // 평균만 보면 한 조각이 엉망이어도 나머지가 가려 준다 — 제일 나쁜 조각도 같이 본다.
   // 잘못 나눈 결과는 거의 항상 "한 조각이 형편없다"로 드러난다.
   const rate = (parts) => {
+    const scores = [];
     let sum = 0;
     let worst = 1;
     for (const p of parts) {
       // 너무 홀쭉하거나 넓은 조각이 나오면 나눈 자리가 틀린 것이다
       const aspect = p.w / p.h;
-      if (aspect < 0.12 || aspect > 1.05) return 0;
-      const s = Math.max(...scoreGrid(normalize(cropBitmap(p, w)), templates, params));
+      if (aspect < 0.12 || aspect > 1.05) return null;
+      const per = scoreShape(makeShape(normalize(cropBitmap(p, w))), templates, params);
+      scores.push(per);
+      const s = Math.max(...per);
       sum += s;
       if (s < worst) worst = s;
     }
     const mean = sum / parts.length;
     // 자릿수가 늘어날수록 조금씩 불리하게 — 확실히 나을 때만 나눈다
-    return (mean + worst) / 2 - (parts.length - 1) * (params.splitCost ?? 0.02);
+    const value = (mean + worst) / 2 - (parts.length - 1) * (params.splitCost ?? 0.02);
+    return { value, scores };
   };
 
-  let best = [box];
-  let bestScore = rate(best);
+  const whole = rate([box]);
+  let best = { boxes: [box], scores: whole ? whole.scores : [] };
+  let bestValue_ = whole ? whole.value : -1;
+
   const maxK = Math.min(maxDigits, Math.max(1, Math.round(box.w / Math.max(1, box.h * 0.42))));
   for (let k = 2; k <= maxK; k += 1) {
     const parts = splitComponent(box, w, k);
     if (!parts) continue;
-    const score = rate(parts);
-    if (score > bestScore) {
-      bestScore = score;
-      best = parts;
+    const got = rate(parts);
+    if (got && got.value > bestValue_) {
+      bestValue_ = got.value;
+      best = { boxes: parts, scores: got.scores };
     }
   }
   return best;
 }
 
+/**
+ * 잘라 온 턴 숫자 영역에서 숫자를 읽는다.
+ *
+ * 이진화 문턱값 셋 × 명암 방향 둘 = 여섯 번 읽어 보고 제일 잘 읽힌 것을 쓴다.
+ * 예전엔 "화면에서 적은 쪽이 글자"라고 한 번만 단정해서, 영역에 밝은 패널이
+ * 조금만 걸쳐도 통째로 뒤집혀 아무것도 못 읽었다.
+ *
+ * @param {Uint8Array} gray 회색조 픽셀 (길이 w*h)
+ * @param {{minScore?:number, minMargin?:number, maxDigits?:number,
+ *          candidates?:number[], match?:object, thresholdOffsets?:number[]}} [opts]
+ * @returns {{value:number, confidence:number, margin:number, digits:number[],
+ *            bright:boolean, threshold:number, snapped:boolean, boxes:number}|null}
+ */
 function readTurn(gray, w, h, templates, opts = {}) {
   if (!gray || w <= 0 || h <= 0 || !templates || templates.length === 0) return null;
   const maxDigits = opts.maxDigits ?? 3;
   const params = opts.match || MATCH;
 
+  // 문턱값은 밝기 분포에서 나오는 값이라 명암 방향과 무관하다 — 한 번만 구해 나눠 쓴다
+  const base = otsuThreshold(gray);
+  const thresholds = [];
+  for (const off of opts.thresholdOffsets || THRESHOLD_OFFSETS) {
+    const t = Math.max(1, Math.min(254, base + off));
+    if (!thresholds.includes(t)) thresholds.push(t);
+  }
+
   let best = null;
-  for (const bright of [true, false]) {
-    const found = digitBoxes(components(binarize(gray, w, h, bright), w, h), h, maxDigits);
-    if (found.length === 0) continue;
+  for (const threshold of thresholds) {
+    for (const bright of [true, false]) {
+      const found = digitBoxes(
+        components(binarize(gray, w, h, bright, threshold), w, h),
+        h,
+        maxDigits,
+      );
+      if (found.length === 0) continue;
 
-    // 붙어 버린 덩어리를 풀어 준다 ("12"가 한 덩어리로 잡히는 흔한 경우)
-    const boxes = [];
-    for (const box of found) boxes.push(...expandBox(box, w, templates, maxDigits, params));
-    if (boxes.length === 0 || boxes.length > maxDigits) continue;
+      // 붙어 버린 덩어리를 풀어 준다 ("12"가 한 덩어리로 잡히는 흔한 경우)
+      const boxes = [];
+      const scores = [];
+      for (const box of found) {
+        const got = expandBox(box, w, templates, maxDigits, params);
+        boxes.push(...got.boxes);
+        scores.push(...got.scores);
+      }
+      if (boxes.length === 0 || boxes.length > maxDigits) continue;
 
-    const scores = boxes.map((box) => scoreGrid(normalize(cropBitmap(box, w)), templates, params));
-    const got = bestValue(scores, opts);
-    if (!got) continue;
+      const got = bestValue(scores, opts);
+      if (!got) continue;
 
-    const ranked = { ...got, bright, boxes: boxes.length };
+      const ranked = { ...got, bright, threshold, boxes: boxes.length };
 
-    // ★ 자릿수를 더 많이 찾은 쪽이 이긴다.
-    //
-    // 점수(마진)만 보고 고르면, 글자와 배경이 뒤집힌 쪽에서 "60"이 한 덩어리로
-    // 잡혀 7 하나로 읽히고, 자릿수가 하나뿐이라 경쟁자가 없어 마진이 커서
-    // **그 엉터리 결과가 이겼다.** 두 자리를 찾아낸 쪽이 거의 항상 옳다.
-    const better =
-      !best ||
-      ranked.boxes > best.boxes ||
-      (ranked.boxes === best.boxes &&
-        (ranked.margin > best.margin + 0.02 ||
-          (Math.abs(ranked.margin - best.margin) <= 0.02 && ranked.confidence > best.confidence)));
-    if (better) best = ranked;
+      // ★ 자릿수를 더 많이 찾은 쪽이 이긴다.
+      //
+      // 점수(마진)만 보고 고르면, 글자와 배경이 뒤집힌 쪽에서 "60"이 한 덩어리로
+      // 잡혀 7 하나로 읽히고, 자릿수가 하나뿐이라 경쟁자가 없어 마진이 커서
+      // **그 엉터리 결과가 이겼다.** 두 자리를 찾아낸 쪽이 거의 항상 옳다.
+      const better =
+        !best ||
+        ranked.boxes > best.boxes ||
+        (ranked.boxes === best.boxes &&
+          (ranked.margin > best.margin + 0.02 ||
+            (Math.abs(ranked.margin - best.margin) <= 0.02 &&
+              ranked.confidence > best.confidence)));
+      if (better) best = ranked;
+    }
   }
   return best;
 }
 
 module.exports = {
+  CROP_TARGET_HEIGHT,
   GRID_W,
   GRID_H,
+  GRID_N,
   MATCH,
+  THRESHOLD_OFFSETS,
   toGray,
   otsuThreshold,
   binarize,
   components,
   looksLikeDigit,
-  boxFrom,
+  sliceBox,
   splitComponent,
   textLines,
   pickLine,
@@ -736,11 +921,15 @@ module.exports = {
   cropBitmap,
   normalize,
   dilate,
+  popcount,
+  makeShape,
   similarity,
+  similarityOf,
   holeInfo,
   holeCount,
   loadTemplates,
   gridToRows,
+  scoreShape,
   scoreGrid,
   expandBox,
   bestValue,

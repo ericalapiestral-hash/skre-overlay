@@ -24,8 +24,12 @@ const DEFAULTS = {
   turnRegion: null,
   /** 사용자가 직접 가르친 숫자 템플릿 { d, rows } */
   userTemplates: [],
-  /** 자동 인식 주기 (ms) */
-  tickMs: 600,
+  /**
+   * 자동 인식 주기 (ms).
+   * 한 장 읽는 데 1~2ms라 이 값이 곧 "턴이 바뀌고 화면이 따라오기까지"의 시간이다.
+   * 예전엔 600ms였는데, 그건 인식이 14ms 걸리던 때 잡은 값이다.
+   */
+  tickMs: 250,
 };
 
 function createStore(dir) {

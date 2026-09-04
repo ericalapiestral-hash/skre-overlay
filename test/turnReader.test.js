@@ -9,6 +9,7 @@ const assert = require('node:assert');
 const {
   GRID_W,
   GRID_H,
+  MATCH,
   toGray,
   otsuThreshold,
   binarize,
@@ -17,10 +18,15 @@ const {
   digitBoxes,
   cropBitmap,
   normalize,
+  dilate,
   holeInfo,
   similarity,
   loadTemplates,
   gridToRows,
+  makeShape,
+  similarityOf,
+  scoreShape,
+  scoreGrid,
   bestValue,
   readTurn,
 } = require('../src/shared/turnReader');
@@ -144,9 +150,26 @@ test('붙어 버린 두 숫자를 나눈다', () => {
 });
 
 test('나눌 수 없으면 null을 돌려준다', () => {
-  const tiny = { minX: 0, minY: 0, maxX: 2, maxY: 9, w: 3, h: 10, pixels: [0, 1, 2] };
-  assert.strictEqual(splitComponent(tiny, 3, 3), null);
-  assert.strictEqual(splitComponent(tiny, 3, 1), null);
+  const img = paste([toGrid(GROUPS.get(1)[0].rows)], { scale: 1 });
+  const box = components(binarize(img.gray, img.w, img.h, true), img.w, img.h)[0];
+  assert.ok(box);
+  assert.strictEqual(splitComponent(box, img.w, 1), null, '한 조각은 나누는 게 아니다');
+  // 조각 하나가 3픽셀도 안 되게 얇아지면 나누지 않는다
+  assert.strictEqual(splitComponent(box, img.w, box.w), null);
+});
+
+test('나눈 조각은 원래 덩어리를 빠짐없이 나눠 갖는다', () => {
+  const img = paste([toGrid(GROUPS.get(1)[0].rows), toGrid(GROUPS.get(2)[0].rows)], { gap: -2 });
+  const boxes = components(binarize(img.gray, img.w, img.h, true), img.w, img.h);
+  const wide = boxes.find((b) => b.w > b.h * 0.75);
+  if (!wide) return; // 이 폰트에서는 안 붙었다
+  const parts = splitComponent(wide, img.w, 2);
+  assert.ok(parts);
+  assert.strictEqual(
+    parts.reduce((n, p) => n + p.count, 0),
+    wide.count,
+    '조각들의 픽셀 합이 원래와 같아야 한다 — 잃어버리면 글자가 얇아져 오독이 난다',
+  );
 });
 
 // ─────────────────────────────── 판단
@@ -186,13 +209,83 @@ test('자릿수가 다른 후보는 무시한다', () => {
 test('빈 입력에는 null', () => {
   assert.strictEqual(bestValue([]), null);
   assert.strictEqual(bestValue(/** @type {any} */ (null)), null);
-  assert.strictEqual(readTurn(null, 0, 0, TEMPLATES), null);
+  assert.strictEqual(readTurn(/** @type {any} */ (null), 0, 0, TEMPLATES), null);
   assert.strictEqual(readTurn(new Uint8Array(4), 2, 2, []), null);
 });
 
 test('아무것도 없는 화면에서는 답하지 않는다', () => {
   const gray = new Uint8Array(60 * 30).fill(30);
   assert.strictEqual(readTurn(gray, 60, 30, TEMPLATES), null);
+});
+
+// ─────────────────────────────── 빠르게 만든 길이 결과를 안 바꿨는지
+
+test('상한 가지치기를 해도 전부 대조한 것과 결과가 같다', () => {
+  // 속도를 위해 "넘을 수 없는 점수"인 템플릿은 건너뛴다. 그게 정말 결과를
+  // 안 바꾸는지, 여기서 가지치기 없이 직접 계산해 비교한다.
+  const exhaustive = (grid) => {
+    const shape = makeShape(grid);
+    const per = new Array(10).fill(0);
+    for (const t of TEMPLATES) {
+      const diff = Math.abs(t.shape.hole.count - shape.hole.count);
+      let penalty = 1;
+      if (diff === 1) penalty = MATCH.hole1;
+      else if (diff >= 2) penalty = MATCH.hole2;
+      else if (shape.hole.count > 0 && t.shape.hole.y >= 0 && shape.hole.y >= 0) {
+        penalty = 1 - Math.min(1, Math.abs(t.shape.hole.y - shape.hole.y) * 2) * MATCH.holeY;
+      }
+      const s = similarityOf(shape, t.shape, MATCH.exactWeight) * (t.weight ?? 1) * penalty;
+      if (s > per[t.digit]) per[t.digit] = s > 1 ? 1 : s;
+    }
+    return per;
+  };
+
+  for (let d = 0; d <= 9; d += 1) {
+    const grid = toGrid(GROUPS.get(d)[2].rows);
+    assert.deepStrictEqual(scoreGrid(grid, TEMPLATES), exhaustive(grid), `숫자 ${d}`);
+  }
+});
+
+test('비트로 센 닮음 점수가 칸마다 센 것과 같다', () => {
+  const slow = (a, b, ew) => {
+    let both = 0;
+    let either = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i] && b[i]) both += 1;
+      if (a[i] || b[i]) either += 1;
+    }
+    if (either === 0) return 0;
+    const da = dilate(a);
+    const db = dilate(b);
+    let aOn = 0;
+    let bOn = 0;
+    let aIn = 0;
+    let bIn = 0;
+    for (let i = 0; i < a.length; i += 1) {
+      if (a[i]) {
+        aOn += 1;
+        if (db[i]) aIn += 1;
+      }
+      if (b[i]) {
+        bOn += 1;
+        if (da[i]) bIn += 1;
+      }
+    }
+    if (aOn === 0 || bOn === 0) return 0;
+    return (both / either) * ew + ((aIn / aOn + bIn / bOn) / 2) * (1 - ew);
+  };
+
+  for (let d = 0; d <= 9; d += 1) {
+    const a = toGrid(GROUPS.get(d)[0].rows);
+    const b = toGrid(GROUPS.get((d + 3) % 10)[1].rows);
+    assert.strictEqual(similarityOf(makeShape(a), makeShape(b), 0.5), slow(a, b, 0.5), `숫자 ${d}`);
+  }
+});
+
+test('빈 모양은 어떤 것과도 안 닮았다', () => {
+  const empty = new Uint8Array(GRID_W * GRID_H);
+  assert.strictEqual(scoreGrid(empty, TEMPLATES).every((s) => s === 0), true);
+  assert.strictEqual(similarityOf(makeShape(empty), makeShape(empty), 0.5), 0);
 });
 
 // ─────────────────────────────── 실제 폰트 표본
@@ -220,13 +313,56 @@ test('명암이 뒤집혀도 자릿수를 잃지 않는다', { skip: !loadFixtur
 });
 
 test('처음 보는 폰트에서 정확도와 오독이 기준을 지킨다', { skip: !loadFixtures() }, () => {
-  // 문턱값·대조 계수를 건드리면 이 수치가 먼저 나빠진다 — 회귀를 잡는 자물쇠다
+  // 앱이 실제로 넣는 것과 같은 조건(확대 + 빌드 턴 후보)에서 잰다.
+  // 지금 수치는 맞음 99.7% · 틀림 0.3%. 문턱값·대조 계수를 건드리면
+  // 여기가 먼저 나빠진다 — 회귀를 잡는 자물쇠다.
   const r = bench({ useCandidates: true });
   assert.ok(r);
   const wrong = r.wrong / r.total;
   const ok = r.ok / r.total;
-  assert.ok(wrong <= 0.02, `오독 ${(wrong * 100).toFixed(1)}% — 2%를 넘으면 안 된다`);
-  assert.ok(ok >= 0.96, `정답 ${(ok * 100).toFixed(1)}% — 96% 아래로 떨어지면 안 된다`);
+  assert.ok(wrong <= 0.01, `오독 ${(wrong * 100).toFixed(1)}% — 1%를 넘으면 안 된다`);
+  assert.ok(ok >= 0.98, `정답 ${(ok * 100).toFixed(1)}% — 98% 아래로 떨어지면 안 된다`);
+});
+
+test('화면 확대가 정확도를 올린다', { skip: !loadFixtures() }, () => {
+  // 인식 전에 크롭을 CROP_TARGET_HEIGHT 근처로 키운다. 그 값을 잘못 만지면
+  // 조용히 나빠지므로, 키운 쪽이 더 나은지 자물쇠로 걸어 둔다.
+  const scaled = bench({ useCandidates: true });
+  const native = bench({ useCandidates: true, target: 0 });
+  assert.ok(scaled && native);
+  assert.ok(
+    scaled.wrong <= native.wrong && scaled.ok >= native.ok,
+    `키운 쪽 ${scaled.ok}/${scaled.wrong} · 원본 ${native.ok}/${native.wrong}`,
+  );
+});
+
+test('문턱값은 한 번이면 충분하다 — 여러 번은 오히려 나쁘다', { skip: !loadFixtures() }, () => {
+  // 여러 번 보면 나을 것 같아 넣었다가 재 보고 뺐다. 다시 넣고 싶어질 때를 위해
+  // "재 보니 이랬다"를 자물쇠로 걸어 둔다.
+  const once = bench({ useCandidates: true });
+  const many = bench({ useCandidates: true, read: { thresholdOffsets: [0, -8, 8] } });
+  assert.ok(once && many);
+  assert.ok(once.wrong <= many.wrong, `한 번: 틀림 ${once.wrong} / 여러 번: 틀림 ${many.wrong}`);
+  assert.ok(once.ms < many.ms, `한 번이 더 빨라야 한다 (${once.ms} vs ${many.ms})`);
+});
+
+test('후보 없이도 오독이 낮다', { skip: !loadFixtures() }, () => {
+  // 빌드 턴을 후보로 넘기는 길이 막혀도(단계가 없는 빌드 등) 인식 자체가
+  // 버텨야 한다. 후보에 기대어 수치가 좋아 보이는 것을 막는 자물쇠다.
+  const r = bench({});
+  assert.ok(r);
+  const wrong = r.wrong / r.total;
+  assert.ok(wrong <= 0.015, `오독 ${(wrong * 100).toFixed(1)}% — 1.5%를 넘으면 안 된다`);
+});
+
+test('한 장 읽는 시간이 예산 안에 있다', { skip: !loadFixtures() }, () => {
+  // 인식 시간은 곧 인식 주기의 하한이다. 예전 구조(대조마다 부풀리기를 다시 계산)는
+  // 14ms였고, 그래서 주기를 600ms로 잡을 수밖에 없었다. 지금은 1~2ms다.
+  // 여기 걸린 값은 느린 기계에서도 통과할 만큼 넉넉하게 잡았다 — 구조가 무너지면
+  // 열 배 단위로 나빠지므로 이 정도로도 회귀는 잡힌다.
+  const r = bench({ useCandidates: true });
+  assert.ok(r);
+  assert.ok(r.ms < 8, `중앙값 ${r.ms.toFixed(2)}ms — 8ms를 넘으면 구조가 무너진 것이다`);
 });
 
 test('가르친 폰트에서는 더 정확하다', { skip: !loadFixtures() }, () => {

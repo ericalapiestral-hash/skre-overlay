@@ -48,6 +48,8 @@ let expandedHeight = null;
 
 let store = null;
 let engine = null;
+/** 마지막으로 읽은 도감 — 본문과 단계 자료는 여기 남고 화면으로는 안 나간다 */
+let catalog = null;
 
 // ─────────────────────────────── 도감
 
@@ -73,6 +75,48 @@ function currentCatalog() {
   return { ...result, tried };
 }
 
+/**
+ * 화면에 보낼 가벼운 목록.
+ *
+ * 도감 전체(빌드마다 본문 수 KB + 펼친 단계 자료)를 통째로 넘기면 빌드가 수백 개일 때
+ * 갱신마다 몇 MB가 오간다 — 전투 중에 눈에 띄게 멈칫한다. 화면이 실제로 쓰는 건
+ * 목록에 필요한 몇 글자와 분기 이름뿐이다. 단계와 본문은 필요할 때 id로 물어본다.
+ */
+function lightCatalog(c) {
+  return {
+    ok: c.ok,
+    file: c.file,
+    error: c.error,
+    syncedAt: c.syncedAt,
+    stats: c.stats,
+    builds: c.builds.map((b) => ({
+      id: b.id,
+      name: b.name,
+      label: b.label,
+      category: b.category,
+      group: b.group,
+      weekdays: b.weekdays,
+      stepCount: b.stepCount,
+      strategy: b.strategy,
+      // 변형이 둘 이상인 그룹만 — 칩을 그리는 데 필요한 것뿐
+      branches: b.groups
+        .map((g, at) => ({ at, labels: g.variants.map((v) => v.label) }))
+        .filter((g) => g.labels.length > 1),
+    })),
+  };
+}
+
+/** 도감을 다시 읽어 메인에 담아 둔다 */
+function refreshCatalog() {
+  catalog = currentCatalog();
+  return catalog;
+}
+
+function buildById(id) {
+  if (!catalog) refreshCatalog();
+  return (catalog.builds || []).find((b) => b.id === id) || null;
+}
+
 function rewatch() {
   if (watcher) watcher.close();
   watcher = null;
@@ -93,7 +137,7 @@ function visibleBounds(bounds) {
     x: bounds.x,
     y: bounds.y,
     width: bounds.width || 400,
-    height: bounds.height || 580,
+    height: bounds.height || 470,
   };
   const onScreen = screen.getAllDisplays().some((d) => {
     const a = d.workArea;
@@ -230,7 +274,13 @@ function openPicker() {
 // ─────────────────────────────── IPC
 
 function registerIpc() {
-  ipcMain.handle('catalog:load', () => currentCatalog());
+  ipcMain.handle('catalog:load', () => lightCatalog(refreshCatalog()));
+
+  /** 스킬 순서를 못 읽은 빌드를 본문 그대로 보여줄 때만 쓴다 */
+  ipcMain.handle('catalog:body', (_e, id) => {
+    const build = buildById(id);
+    return build ? build.body : '';
+  });
 
   ipcMain.handle('catalog:pick-file', async () => {
     const r = await dialog.showOpenDialog({
@@ -241,11 +291,11 @@ function registerIpc() {
     if (r.canceled || r.filePaths.length === 0) return null;
     store.save({ buildsPath: r.filePaths[0] });
     rewatch();
-    return currentCatalog();
+    return lightCatalog(refreshCatalog());
   });
 
   ipcMain.handle('catalog:reveal', () => {
-    const { file } = currentCatalog();
+    const { file } = catalog || refreshCatalog();
     if (file && fs.existsSync(file)) shell.showItemInFolder(file);
     return Boolean(file);
   });
@@ -323,13 +373,20 @@ function registerIpc() {
   ipcMain.on('overlay:quit', () => app.quit());
 
   // ── 인식 엔진
-  ipcMain.handle('engine:flow', (_e, groups, picks, opts) => engine.setFlow(groups, picks, opts));
+  // 화면은 빌드 id만 보낸다 — 단계 자료는 여기 있는 것을 쓴다
+  ipcMain.handle('engine:flow', (_e, buildId, picks, opts) => {
+    const build = buildById(buildId);
+    return engine.setFlow(build ? build.groups : [], picks, opts);
+  });
   ipcMain.handle('engine:index', (_e, i) => engine.setIndex(i));
   ipcMain.handle('engine:reset', () => {
     engine.reset();
     return true;
   });
-  ipcMain.handle('engine:feed', (_e, buf, w, h) => engine.feed(new Uint8Array(buf), w, h));
+  // 구조적 복제로 이미 Uint8Array가 넘어온다 — 한 번 더 복사하면 프레임마다 헛일이다
+  ipcMain.handle('engine:feed', (_e, buf, w, h) =>
+    engine.feed(buf instanceof Uint8Array ? buf : new Uint8Array(buf), w, h),
+  );
 
   /**
    * 숫자 가르치기 — 실제 게임 화면에서 뽑은 모양을 대조표에 넣는다.
@@ -340,7 +397,7 @@ function registerIpc() {
     const text = String(value).trim();
     if (!/^\d{1,3}$/.test(text)) return { ok: false, error: '0~999 사이 숫자를 넣어주세요.' };
 
-    const gray = new Uint8Array(buf);
+    const gray = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
     for (const bright of [true, false]) {
       const boxes = digitBoxes(components(binarize(gray, w, h, bright), w, h), h, 3);
       if (boxes.length !== text.length) continue;
@@ -400,11 +457,11 @@ function registerShortcuts() {
 
 function doctor() {
   const env = catalogEnv();
+  const cat = refreshCatalog();
   console.log('── SKRE 오버레이 자가 점검 ──');
   console.log(`설정 파일 : ${store.file}`);
   console.log(`대조표    : 기본 ${BUILTIN.length}개 + 가르친 것 ${(store.load().userTemplates || []).length}개`);
 
-  const cat = currentCatalog();
   if (!cat.ok) {
     console.log(`도감      : ✗ ${cat.error}`);
     console.log('찾아본 자리:');
