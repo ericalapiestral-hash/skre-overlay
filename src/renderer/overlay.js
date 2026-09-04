@@ -30,6 +30,8 @@ const state = {
   /** @type {{displayId:number, fx:number, fy:number, fw:number, fh:number}|null} */
   region: null,
   tickMs: 100,
+  /** 실제로 요청한 캡처 장수 (초당) — 프레임을 흘려보낼 문턱의 기준 */
+  captureFps: 10,
   /** 마지막으로 잘라 온 화면 — [가르치기]가 쓴다 */
   lastFrame: null,
   stats: null,
@@ -320,6 +322,9 @@ let watchdog = null;
 let frameHandle = 0;
 /** 마지막으로 인식을 돌린 시각 */
 let lastProcessed = 0;
+/** 실제 인식 간격(ms) — 평활한 값 */
+let rateMs = 0;
+let rateShownAt = 0;
 let busy = false;
 /** toggleAuto가 비동기라 겹칠 수 있다 — 세대 번호로 늦게 도착한 호출을 무효화한다 */
 let generation = 0;
@@ -369,12 +374,31 @@ function onFrame() {
   timer = null;
   if (!state.auto) return;
   const now = performance.now();
-  // 주기보다 자주 오는 화면은 흘려보낸다 (5ms는 흔들림 여유)
-  if (now - lastProcessed >= state.tickMs - 5) {
+
+  // ★ 문턱은 **주기가 아니라 캡처 간격**을 기준으로 잡는다 (반 장 분량).
+  //
+  // 주기를 문턱으로 쓰면 읽는 속도가 반으로 깎인다: 캡처가 주기에 맞춰 오는데
+  // 도착이 조금이라도 이르면 그 장을 흘려보내고 다음 장(두 배 뒤)을 기다리기 때문이다.
+  // 우리가 정하는 건 캡처 장수이므로, 온 장은 다 읽는 게 맞다. 낮춰도 폭주하지 않는다 —
+  // 장수 제약이 무시돼 훨씬 빨리 오는 환경에서도 이 문턱이 상한이 된다.
+  if (now - lastProcessed >= 500 / state.captureFps) {
+    measureRate(now);
     lastProcessed = now;
     tick();
   }
   pump();
+}
+
+/** 실제로 초당 몇 번 읽고 있는지 — 설정 패널에 보여준다 (정말 도는지 눈으로 확인하려고) */
+function measureRate(now) {
+  if (lastProcessed > 0) {
+    const dt = now - lastProcessed;
+    // 지수 평활 — 한 프레임 튀어도 숫자가 안 흔들린다
+    rateMs = rateMs > 0 ? rateMs * 0.8 + dt * 0.2 : dt;
+  }
+  if (now - rateShownAt < 500) return;
+  rateShownAt = now;
+  $('rate').textContent = rateMs > 0 ? `실제 ${(1000 / rateMs).toFixed(1)}회/초` : '';
 }
 
 /**
@@ -403,8 +427,9 @@ async function startCapture() {
 
   stopStream();
   // 화면을 통째로 받아 오는 일이라 초당 장수가 곧 시스템 부담이다.
-  // 인식 주기에 맞춰 필요한 만큼만 받는다 (250ms 주기면 초당 5장).
-  const fps = Math.max(4, Math.min(20, Math.round(1000 / state.tickMs) + 1));
+  // 인식 주기와 **같게** 받는다 — 온 장은 다 읽으므로 이게 곧 인식 속도가 된다.
+  const fps = Math.max(1, Math.min(20, Math.round(1000 / state.tickMs)));
+  state.captureFps = fps;
   media = await navigator.mediaDevices.getUserMedia(/** @type {any} */ ({
     audio: false,
     video: {
@@ -535,6 +560,7 @@ async function toggleAuto(on) {
 
   if (!on) {
     stopCapture();
+    $('rate').textContent = '';
     setStatus(state.region ? '자동 꺼짐 — 켜면 턴을 읽습니다.' : '턴 영역을 아직 지정하지 않았어요.', '');
     return;
   }
@@ -546,6 +572,7 @@ async function toggleAuto(on) {
     }
     await api.engine.reset();
     lastProcessed = 0; // 켜자마자 한 장 읽는다 (한 주기를 기다리지 않게)
+    rateMs = 0;
     pump();
     startWatchdog();
     setStatus('인식 중…', 'on');
