@@ -326,7 +326,17 @@ node tools/replay.js 기록.json --scenario "이름" > test/scenarios/real-01.js
 - **포장하면 `__dirname`이 app.asar 안이 된다.** 도감 경로를 상대경로로 되돌리지 말 것
   (`catalog.js`의 `candidatePaths`가 exe 자리를 따로 잡는다).
 - **exe를 공개된 곳에 올리지 말 것.** 도감은 길드 내부 자료다. `builds.json`과 `data/`는
-  `.gitignore`에 있다.
+  `.gitignore`에 있다. 저장소가 공개라 **GitHub 릴리스도 공개된 곳이다** — 워크플로
+  (`.github/workflows/build.yml`)가 exe를 짓기만 하고 artifact로 남기는 이유가 이것이다.
+- **`version`에 `-test.1` 같은 꼬리표를 붙이지 말 것.** NSIS는 버전을 순수 숫자로만
+  받아서, `0.9.0-test.1`을 넣으면 포터블 exe를 조립하는 마지막 단계에서 **에러도 없이
+  멈춘다** (`1.0.0`은 3분에 끝나는 빌드가 15분을 넘겼다). 시험판 표시는 버전이 아니라
+  `portable.artifactName`(파일 이름)에 넣는다.
+- **윈도우 exe는 윈도우에서 짓는 게 맞다.** 리눅스에서도 지을 수는 있지만 exe의
+  아이콘·이름 같은 메타데이터를 넣는 단계에 wine이 필요하다. 급할 때는
+  `-c.win.signAndEditExecutable=false`로 그 단계를 건너뛸 수 있는데, 그러면 exe 속성이
+  "Electron"으로 남는다. **이 옵션을 package.json에 박아 넣지 말 것** — 윈도우에서는
+  wine이 필요 없어서 제대로 들어간다.
 - 접기는 CSS로만 숨기면 안 된다 — 투명한 창이 그대로 게임 클릭을 막는다. 창 자체를 줄인다.
 - 클릭 통과(`Ctrl+Alt+L`)를 켤 때는 해제 단축키가 등록됐는지 먼저 본다. 안 그러면 영영 못 끈다.
 
