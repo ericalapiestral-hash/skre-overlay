@@ -1,0 +1,42 @@
+{
+  "name": "리셋 빌드 마지막 라운드에서의 재시작 — 앞 라운드는 전환, 마지막 라운드만 P6",
+  "why": "라운드 넷짜리 리셋 빌드. 1~3라운드가 끝날 때 나오는 0은 P5 전환(2프레임)이고, 마지막 4라운드에서 나오는 0은 재시작 후보다. P6은 600ms(7프레임) 이어져야 하므로 그 전까지는 4라운드 마지막 단계에 그대로 있어야 하고, 600ms를 채우면 빌드 처음으로 돌아간다.",
+  "build": "reset",
+  "steps": [
+    { "turn": 0, "label": "1라운드" },
+    { "turn": 4, "label": "1라운드" },
+    { "turn": 0, "label": "2라운드" },
+    { "turn": 0, "label": "3라운드" },
+    { "turn": 0, "label": "4라운드" },
+    { "turn": 5, "label": "4라운드" }
+  ],
+  "start": 0,
+  "frames": [
+    0, 1, 2, 3, 4, 5,
+    null, null, null, null, null, null,
+    0, 0,
+    1, 2, 3, 4,
+    null, null, null, null, null,
+    0, 0, 0, 0,
+    1, 2, 3,
+    null, null, null, null, null, null,
+    0, 0,
+    1, 2, 3, 4, 5, 6, 7,
+    null, null, null, null, null, null, null, null,
+    0, 0, 0, 0, 0, 0, 0,
+    1, 2, 4
+  ],
+  "expect": [
+    { "by": 1, "index": 1 },
+    { "from": 1, "to": 12, "hold": 1 },
+    { "at": 13, "index": 2 },
+    { "from": 13, "to": 23, "hold": 2 },
+    { "at": 24, "index": 3 },
+    { "from": 24, "to": 36, "hold": 3 },
+    { "at": 37, "index": 4 },
+    { "at": 38, "index": 5 },
+    { "from": 38, "to": 58, "hold": 5 },
+    { "at": 59, "index": 0 },
+    { "at": 60, "index": 1 }
+  ]
+}

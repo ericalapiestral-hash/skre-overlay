@@ -1,0 +1,41 @@
+{
+  "name": "리셋 빌드 라운드 넷 — 한 라운드가 단계 하나, 전환이 세 번 이어진다",
+  "why": "2라운드는 단계가 0턴 하나뿐인데 실제로는 9턴까지 간다. P1에 따라 그 라운드 안에서는 더 갈 곳이 없으니 그 단계에 머물러야 하고(리셋 경계 너머로 새면 안 된다), 라운드가 끝날 때마다 P5로 다음 라운드 첫 단계로만 한 칸씩 넘어가야 한다. 단계 하나뿐인 라운드에서 1턴 밀림(P3)이 와도 그대로 있어야 한다.",
+  "build": "reset",
+  "steps": [
+    { "turn": 0, "label": "1라운드" },
+    { "turn": 4, "label": "1라운드" },
+    { "turn": 0, "label": "2라운드" },
+    { "turn": 0, "label": "3라운드" },
+    { "turn": 3, "label": "3라운드" },
+    { "turn": 0, "label": "4라운드" }
+  ],
+  "start": 0,
+  "frames": [
+    0, 1, 2, 3, 4, 5, 6, 7,
+    null, null, null, null, null, null,
+    0, 0,
+    1, 2, 3, 4,
+    3,
+    4, 5,
+    null, null, null,
+    6, 7, 8, 9,
+    null, null, null, null, null, null,
+    0, 0,
+    1, 2, 3, 4, 5,
+    null, null, null, null, null,
+    0, 0,
+    1, 2
+  ],
+  "expect": [
+    { "by": 1, "index": 1 },
+    { "from": 1, "to": 14, "hold": 1 },
+    { "at": 15, "index": 2 },
+    { "from": 15, "to": 36, "hold": 2 },
+    { "at": 37, "index": 3 },
+    { "at": 38, "index": 4 },
+    { "from": 38, "to": 48, "hold": 4 },
+    { "at": 49, "index": 5 },
+    { "from": 49, "to": 51, "hold": 5 }
+  ]
+}

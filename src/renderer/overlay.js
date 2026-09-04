@@ -543,6 +543,7 @@ function reportStatus(r) {
     'jump-wait': '크게 건너뛰는 중인지 확인 중',
     'reset-wait': '다음 라운드인지 확인 중',
     'restart-wait': '재시작인지 확인 중',
+    'start-wait': '고른 라운드가 시작했는지 확인 중',
     pushback: '턴이 뒤로 밀림 — 단계 유지',
     hold: '엉뚱한 숫자 — 단계 유지',
   }[r.why];

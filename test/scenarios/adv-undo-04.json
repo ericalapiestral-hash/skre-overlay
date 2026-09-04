@@ -1,0 +1,29 @@
+{
+  "name": "되돌리기 창(3초)이 지난 뒤 진짜 턴이 돌아오면 되돌리지 않는다",
+  "why": "진짜 턴 6인데 '16'이 네 프레임 이어져 16턴 단계로 뛴다(P7). 곧바로 3.1초짜리 긴 연출이 들어와 그동안 아무것도 못 읽고, 연출이 끝났을 때는 뛴 지 3초가 넘었다. P8은 '3초 안에'만 되돌리므로 7·7·8·8·9가 이어져도 되돌리지 않고, 큰 뒤로는 P4대로 그대로 둔다 — 단계는 계속 16턴 단계다.",
+  "build": "running",
+  "steps": [
+    { "turn": 0, "label": "1라운드" },
+    { "turn": 4, "label": "1라운드" },
+    { "turn": 8, "label": "1라운드" },
+    { "turn": 12, "label": "2라운드" },
+    { "turn": 16, "label": "2라운드" },
+    { "turn": 20, "label": "2라운드" }
+  ],
+  "start": 1,
+  "frames": [
+    4, 5,
+    16, 16, 16, 16,
+    null, null, null, null, null, null, null, null, null, null,
+    null, null, null, null, null, null, null, null, null, null,
+    null, null, null, null, null, null, null, null, null, null,
+    null,
+    7, 7, 8, 8, 9
+  ],
+  "expect": [
+    { "by": 1, "index": 2 },
+    { "from": 2, "to": 3, "hold": 2 },
+    { "at": 5, "index": 4 },
+    { "from": 5, "to": 41, "hold": 4 }
+  ]
+}

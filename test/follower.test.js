@@ -97,3 +97,58 @@ test('P7이 기다리는 동안 오독 값이 기준이 되지 않는다', () =>
   assert.strictEqual(f.push(strong(3), 100).index, 1);
   assert.strictEqual(f.turn, 3);
 });
+
+test('밀림은 정당하게 뛴 것을 되돌리지 않는다 (P8)', () => {
+  // 4·6·8턴이 촘촘한 빌드에서 4→7로 두 단계 뛴 직후의 2턴 밀림(7→5)은
+  // "뛰기 전 턴 4 근처"라 되돌리기 조건에도 들어맞는다. 밀림은 되돌릴 일이 아니다.
+  const dense = [step(0, '1R'), step(4, '1R'), step(6, '1R'), step(8, '1R')];
+  const f = createFollower(dense, { index: 1 });
+  let t = 0;
+  const feed = (v) => f.push(strong(v), (t += 100)).index;
+  feed(7);
+  feed(7);
+  assert.strictEqual(feed(7), 3, '세 프레임 이어지면 두 단계 뛴다');
+  for (let i = 0; i < 6; i += 1) assert.strictEqual(feed(5), 3, '밀림에는 단계를 안 움직인다');
+});
+
+test('잘못 뛴 것은 여전히 되돌린다 (P8)', () => {
+  // 위 규칙이 P8 자체를 막으면 안 된다 — 오독으로 크게 뛴 뒤 진짜 턴이 돌아오는 경우
+  const f = createFollower(RUNNING, { index: 1 });
+  let t = 0;
+  const feed = (v) => f.push(strong(v), (t += 100)).index;
+  feed(5);
+  feed(40);
+  feed(40);
+  assert.strictEqual(feed(40), 4, '오독이 이어져 끝까지 뛴다');
+  feed(6);
+  feed(6);
+  // 뛰기 전 자리(index 1)로 돌아가 거기서부터 다시 따라간다 — 6턴이면 8턴 단계다
+  assert.strictEqual(feed(6), 2, '진짜 턴이 돌아오면 뛰기 전 자리에서 다시 따라간다');
+});
+
+test('손으로 미리 고른 라운드의 첫 0은 이 라운드가 시작한 것이다 (P9b)', () => {
+  // 1라운드가 5·6턴까지 갔는데 사용자가 2라운드 첫 단계로 미리 옮긴 경우.
+  // 뒤이어 오는 0을 P5(다음 라운드로)로 읽으면 한 라운드를 통째로 건너뛴다.
+  const f = createFollower(RESET, { index: 1 });
+  let t = 0;
+  const feed = (v) => f.push(v === null ? null : strong(v), (t += 100)).index;
+  feed(5);
+  assert.strictEqual(f.setIndex(2), 2);
+  feed(6); // 아직 1라운드 눈금 — 2라운드 안에서 앞으로 간다
+  feed(7);
+  for (let i = 0; i < 6; i += 1) feed(null);
+  assert.strictEqual(feed(0), 3, '한 프레임으로는 안 움직인다');
+  assert.strictEqual(feed(0), 2, '2라운드 첫 단계로 다시 맞춘다 — 3라운드가 아니다');
+  assert.strictEqual(feed(4), 3, '그 뒤로는 평소처럼');
+});
+
+test('같은 라운드 안에서 손으로 옮긴 것은 미리 고름이 아니다 (P9b)', () => {
+  const f = createFollower(RESET, { index: 0 });
+  let t = 0;
+  const feed = (v) => f.push(strong(v), (t += 100)).index;
+  feed(4);
+  f.setIndex(1); // 1라운드 안에서 손질 — "곧 넘어간다"가 아니다
+  feed(5);
+  feed(0);
+  assert.strictEqual(feed(0), 2, '평소대로 2라운드로 넘어간다');
+});
