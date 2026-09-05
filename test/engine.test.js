@@ -244,3 +244,42 @@ test('슬래시 없이 숫자만 잡아도 예전처럼 읽는다', { skip: !loa
   }
   assert.strictEqual(e.index, 2);
 });
+
+test('가르치기가 "16 / 70" 화면에서도 된다', { skip: !pairFrame('16/70') && '표본이 없다' }, () => {
+  // ★ 예전에는 여기서 따로 digitBoxes 를 불렀다. 그러면 슬래시가 옆 숫자에 붙거나
+  // 두 글자가 한 덩어리로 잡힌 화면에서 "숫자를 못 찾았어요"만 나왔다 —
+  // **가르치려는 상황이 바로 그 상황인데도.** 지금은 인식기와 같은 길로 자른다.
+  const e = createEngine({ templates: TEMPLATES });
+  const f = pairFrame('16/70');
+  assert.ok(f);
+  const got = e.teachFrom(f.gray, f.w, f.h, '16');
+  assert.strictEqual(got.ok, true, `못 잘랐다: ${JSON.stringify(got)}`);
+  assert.ok(got.ok && got.templates.length === 2);
+  assert.deepStrictEqual(got.ok && got.templates.map((t) => t.d), [1, 6], '슬래시 왼쪽만 가르친다');
+  for (const t of got.ok ? got.templates : []) {
+    assert.strictEqual(t.rows.length, 24);
+    assert.ok(t.rows.every((r) => r.length === 14 && /^[01]+$/.test(r)));
+    assert.ok(t.rows.some((r) => r.includes('1')), '빈 모양을 가르치면 안 된다');
+  }
+});
+
+test('가르친 값의 자릿수가 화면과 다르면 알려준다', { skip: !pairFrame('16/70') && '표본이 없다' }, () => {
+  const e = createEngine({ templates: TEMPLATES });
+  const f = pairFrame('16/70');
+  assert.ok(f);
+  const got = e.teachFrom(f.gray, f.w, f.h, '5');
+  assert.strictEqual(got.ok, false);
+  assert.strictEqual(got.ok === false && got.found, 2, '몇 개를 찾았는지 말해 줘야 고칠 수 있다');
+  assert.strictEqual(got.ok === false && got.want, 1);
+});
+
+test('가르치기는 못 읽는 화면에서도 모양을 뽑는다', { skip: !loadFixtures() && '표본이 없다' }, () => {
+  // 정답은 사람이 말해 주고 있다 — "확신이 없다"고 거절하면 앞뒤가 안 맞는다.
+  // 대조표를 딱 하나만 쥐여 줘서 인식기가 확신할 수 없는 상황을 만든다.
+  const poor = loadTemplates({ templates: [RAW.templates[0]] });
+  const e = createEngine({ templates: poor });
+  const f = frameFor(12);
+  assert.ok(f);
+  const got = e.teachFrom(f.gray, f.w, f.h, '12');
+  assert.strictEqual(got.ok, true, `대조표가 빈약해도 잘라는 낸다: ${JSON.stringify(got)}`);
+});

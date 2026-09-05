@@ -34,6 +34,8 @@ const state = {
   captureFps: 10,
   /** 마지막으로 잘라 온 화면 — [가르치기]가 쓴다 */
   lastFrame: null,
+  /** @type {number|null} 마지막으로 읽힌 턴 값 — [가르치기]에 미리 채워 준다 */
+  lastRead: null,
   stats: null,
   file: '',
 };
@@ -509,6 +511,7 @@ async function tick() {
     // 최대 턴을 알아냈으면 화면에도 "16 / 70"으로 보여준다 — 인식이 슬래시를
     // 제대로 갈랐는지 사람이 한눈에 확인할 수 있는 자리다
     if (r.turn !== null) $('turn').textContent = r.max ? `${r.turn} / ${r.max}` : `${r.turn}턴`;
+    if (r.raw !== null) state.lastRead = r.raw; // [가르치기]를 열 때 미리 채워 준다
     if (r.index !== state.index) {
       state.index = r.index;
       highlightStep();
@@ -623,7 +626,16 @@ function openTeach() {
   }
   drawTeachView(); // 잡힌 화면이 없으면 미리보기 자체를 숨긴다 (빈 검은 상자보다 낫다)
   if (!state.lastFrame) teachMsg('먼저 [턴 영역]을 지정하고 [자동]을 한 번 켜주세요.', 'err');
-  $('teach-value').focus();
+
+  // 지금 읽고 있는 값을 미리 넣어 준다 — 맞으면 그대로 [가르치기], 틀리면 고쳐서 누르면 된다.
+  // 가르치기는 "인식이 이상할 때" 여는 것이라, 맞는 값을 매번 손으로 치게 하면
+  // 귀찮아서 안 쓰게 된다. 정답은 어차피 사람이 확인한다.
+  const input = /** @type {HTMLInputElement} */ ($('teach-value'));
+  if (!input.value && state.lastRead !== null) {
+    input.value = String(state.lastRead);
+    input.select();
+  }
+  input.focus();
 }
 
 function teachMsg(text, cls) {

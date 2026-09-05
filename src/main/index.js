@@ -20,15 +20,7 @@ const { createStore } = require('./config');
 const { resolvePath, loadCatalog, watchCatalog, candidatePaths } = require('./catalog');
 const { createEngine } = require('./engine');
 const { createRecorder } = require('./recorder');
-const {
-  loadTemplates,
-  binarize,
-  components,
-  digitBoxes,
-  cropBitmap,
-  normalize,
-  gridToRows,
-} = require('../shared/turnReader');
+const { loadTemplates } = require('../shared/turnReader');
 
 const BUILTIN = loadTemplates(require('../shared/templates.json'));
 const DOCTOR = process.argv.includes('--doctor');
@@ -453,23 +445,21 @@ function registerIpc() {
     if (!/^\d{1,3}$/.test(text)) return { ok: false, error: '0~999 사이 숫자를 넣어주세요.' };
 
     const gray = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-    for (const bright of [true, false]) {
-      const boxes = digitBoxes(components(binarize(gray, w, h, bright), w, h), h, 3, { imgW: w });
-      if (boxes.length !== text.length) continue;
-      const added = boxes.map((box, i) => ({
-        d: Number(text[i]),
-        rows: gridToRows(normalize(cropBitmap(box, w))),
-      }));
-      const config = store.load();
-      const userTemplates = [...(config.userTemplates || []), ...added];
-      store.save({ userTemplates });
-      engine.setTemplates(BUILTIN, userTemplates);
-      return { ok: true, added: added.length, total: userTemplates.length };
+    // 자르는 일은 엔진이 인식기와 **같은 길**로 한다 (engine.teachFrom 의 설명 참고)
+    const got = engine.teachFrom(gray, w, h, text);
+    if (!got.ok) {
+      return {
+        ok: false,
+        error: got.found
+          ? `화면에서 숫자를 ${got.found}개 찾았는데 ${got.want}개라고 하셨어요. 적은 값이 맞는지, 영역이 턴 숫자에 맞는지 봐주세요.`
+          : '화면에서 숫자를 못 찾았어요. [턴 영역]을 턴 숫자에 더 딱 맞게 다시 잡아주세요.',
+      };
     }
-    return {
-      ok: false,
-      error: `화면에서 숫자 ${text.length}개를 못 찾았어요. 영역을 숫자에 더 딱 맞게 다시 잡아주세요.`,
-    };
+    const config = store.load();
+    const userTemplates = [...(config.userTemplates || []), ...got.templates];
+    store.save({ userTemplates });
+    engine.setTemplates(BUILTIN, userTemplates);
+    return { ok: true, added: got.templates.length, total: userTemplates.length };
   });
 
   ipcMain.handle('engine:forget', () => {

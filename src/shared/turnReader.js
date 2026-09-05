@@ -929,7 +929,7 @@ function expandBox(box, w, templates, maxDigits, params = MATCH) {
 
 /**
  * @typedef {{value: number, confidence: number, margin: number, digits: number[],
- *            max: number|null, maxConfidence: number,
+ *            max: number|null, maxConfidence: number, shapes?: Uint8Array[],
  *            bright: boolean, threshold: number, boxes: number, segs: number}} Reading
  *   value/confidence 는 **지금 턴**(슬래시 왼쪽), max/maxConfidence 는 **최대 턴**(오른쪽).
  *   슬래시가 안 보이면 max 는 null 이다.
@@ -949,8 +949,10 @@ function expandBox(box, w, templates, maxDigits, params = MATCH) {
  *
  * @param {Uint8Array} gray 회색조 픽셀 (길이 w*h)
  * @param {{minScore?:number, minMargin?:number, maxDigits?:number, maxTurn?:number|null,
- *          match?:object, thresholdOffsets?:number[]}} [opts]
+ *          collect?:boolean, match?:object, thresholdOffsets?:number[]}} [opts]
  *   maxTurn 최대 턴을 이미 안다면 — 지금 턴의 자릿수와 상한이 정해진다
+ *   collect 이긴 명암에서 낱글자 모양(14×24 격자)도 같이 돌려준다 — 게임 폰트를
+ *           스스로 배우는 데 쓴다 (shared/learner.js). 이긴 것 하나만 다시 계산한다
  * @returns {Reading|null}
  */
 function readTurn(gray, w, h, templates, opts = {}) {
@@ -979,6 +981,8 @@ function readTurn(gray, w, h, templates, opts = {}) {
   }
 
   let best = null;
+  /** 이긴 명암의 왼쪽 덩어리들 — collect 일 때 모양을 뽑으려고 들고 있는다 */
+  let bestLeft = null;
   for (const threshold of thresholds) {
     for (const bright of [true, false]) {
       const seg = {};
@@ -1022,6 +1026,7 @@ function readTurn(gray, w, h, templates, opts = {}) {
       // 오른쪽(최대 턴)은 못 읽어도 괜찮다 — 있으면 검증에 쓰고, 없으면 그만이다
       const top = right.length > 0 && right.length <= maxDigits ? bestValue(right, opts) : null;
 
+      /** @type {Reading} */
       const ranked = {
         ...cur,
         max: top ? top.value : null,
@@ -1053,9 +1058,14 @@ function readTurn(gray, w, h, templates, opts = {}) {
           (ranked.margin > best.margin + 0.02 ||
             (Math.abs(ranked.margin - best.margin) <= 0.02 &&
               ranked.confidence > best.confidence)));
-      if (better) best = ranked;
+      if (better) {
+        best = ranked;
+        bestLeft = opts.collect ? boxes.slice(0, leftEnd) : null;
+      }
     }
   }
+  // 모양은 **이긴 것 하나만** 뽑는다 — 여섯 번 다 뽑으면 공짜가 아니다
+  if (best && bestLeft) best.shapes = bestLeft.map((b) => normalize(cropBitmap(b, w)));
   return best;
 }
 
