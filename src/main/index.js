@@ -20,6 +20,8 @@ const { createStore } = require('./config');
 const { resolvePath, loadCatalog, watchCatalog, candidatePaths } = require('./catalog');
 const { createEngine } = require('./engine');
 const { createRecorder } = require('./recorder');
+const { fetchTree, dumpHtml } = require('./notion');
+const { toCatalog } = require('../shared/notionDoc');
 const { loadTemplates } = require('../shared/turnReader');
 
 const BUILTIN = loadTemplates(require('../shared/templates.json'));
@@ -67,8 +69,10 @@ function currentCatalog() {
   const result = loadCatalog(file);
   if (!result.ok && !found) {
     // 자동으로 찾다 실패한 경우엔 "어디를 봤는지"까지 알려주는 편이 훨씬 낫다
+    // 앱에는 도감이 안 들어 있다 (길드 내부 자료라 배포판에서 뺀다). 그래서 이건
+    // "고장"이 아니라 **처음 쓰는 사람이 당연히 보는 화면**이다 — 넣는 길을 알려준다.
     result.error =
-      '도감 파일(builds.json)을 못 찾았어요. 길드봇 폴더를 바탕화면에 두고 한 번 실행했는지 보시고, 그래도 안 되면 파일을 직접 골라주세요.';
+      '아직 도감이 없어요. 설정(⚙)에서 노션 도감 주소를 넣거나, builds.json 파일을 직접 골라주세요.';
   }
   return { ...result, tried };
 }
@@ -290,6 +294,63 @@ function registerIpc() {
     store.save({ buildsPath: r.filePaths[0] });
     rewatch();
     return lightCatalog(refreshCatalog());
+  });
+
+  /**
+   * 노션에서 도감을 받아 온다 — 숨긴 창으로 페이지를 열어 글을 긁는다 (main/notion.js).
+   *
+   * 받은 것은 **길드봇이 만들던 builds.json 과 같은 모양**으로 userData 에 저장하고,
+   * buildsPath 가 그 파일을 가리키게 한다. 그래서 이 아래로는 손댈 것이 없다 —
+   * 파일 도감이든 노션 도감이든 catalog.js 부터는 똑같이 흐른다.
+   */
+  ipcMain.handle('catalog:sync-notion', async (_e, url) => {
+    const address = String(url || '').trim() || store.load().notionUrl;
+    if (!address) return { ok: false, error: '노션 도감 주소를 먼저 넣어주세요.' };
+
+    const send = (channel, payload) => {
+      if (overlayWin && !overlayWin.isDestroyed()) overlayWin.webContents.send(channel, payload);
+    };
+    const got = await fetchTree(address, {
+      onProgress: (done, title) => send('catalog:sync-progress', { done, title }),
+    });
+    if (!got.ok || !got.page) return { ok: false, error: got.error };
+
+    const built = toCatalog(got.page);
+    if (built.builds.length === 0) {
+      // 여기서 조용히 성공했다고 하면 안 된다 — 빈 도감이 남고 원인을 못 찾는다.
+      //
+      // 그리고 **화면을 떠서 바탕화면에 남긴다.** 노션이 화면을 어떻게 그리는지는
+      // 이 저장소 안에서 확인할 방법이 없어서(개발하는 곳에서 notion.site 접속이
+      // 막혀 있다), 선택자를 고치려면 실제 HTML이 있어야 한다. 전투 기록과 같은
+      // 이유·같은 자리다 — 사람이 찾아서 보내 줄 수 있어야 쓸모가 있다.
+      let dumped = '';
+      try {
+        const html = await dumpHtml(address);
+        dumped = path.join(app.getPath('desktop'), `skre-노션-${Date.now()}.html`);
+        fs.writeFileSync(dumped, html, 'utf8');
+      } catch {
+        dumped = ''; // 뜨는 데 실패해도 아래 메시지는 나가야 한다
+      }
+      return {
+        ok: false,
+        pages: got.pages,
+        error:
+          `페이지는 열렸는데 빌드를 하나도 못 찾았어요 (페이지 ${got.pages}개). 주소가 도감 맨 위 페이지가 맞는지 봐주세요.` +
+          (dumped ? ` 화면을 떠서 바탕화면에 뒀어요 — 이 파일을 주시면 고칠 수 있습니다: ${dumped}` : ''),
+      };
+    }
+
+    const file = path.join(app.getPath('userData'), 'builds-notion.json');
+    try {
+      fs.writeFileSync(file, JSON.stringify(built, null, 1), 'utf8');
+    } catch (e) {
+      return { ok: false, error: `받아온 도감을 저장하지 못했어요: ${e instanceof Error ? e.message : e}` };
+    }
+    store.save({ notionUrl: address, buildsPath: file });
+    refreshCatalog();
+    rewatch();
+    // 도감 자체는 안 돌려준다 — 화면이 catalog:load 로 가벼운 목록만 다시 받는다
+    return { ok: true, pages: got.pages, builds: built.builds.length };
   });
 
   ipcMain.handle('catalog:reveal', () => {

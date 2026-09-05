@@ -83,8 +83,17 @@
         <div class="set-row wrap">
           <span class="muted" id="file-path">도감: —</span>
         </div>
+        <div class="set-row wrap">
+          <label for="notion-url">노션</label>
+          <input id="notion-url" type="text" spellcheck="false"
+                 placeholder="https://…notion.site/… (도감 맨 위 페이지)" />
+        </div>
         <div class="set-row">
-          <button id="btn-pick-file">도감 파일 선택</button>
+          <button id="btn-notion">노션에서 받기</button>
+          <span class="muted" id="notion-msg"></span>
+        </div>
+        <div class="set-row">
+          <button id="btn-pick-file" class="ghost">도감 파일 선택</button>
           <button id="btn-reveal" class="ghost">폴더 열기</button>
         </div>
         <div class="set-row">

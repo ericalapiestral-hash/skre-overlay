@@ -466,6 +466,12 @@ button.ghost {
   min-width: 0;
 }
 
+/* 노션 주소는 길다 — 남는 자리를 다 쓰되 창을 밀지 않게 min-width를 풀어 준다 */
+#notion-url {
+  flex: 1;
+  min-width: 0;
+}
+
 #teach-value {
   flex: 0 0 calc(70px * var(--scale));
 }

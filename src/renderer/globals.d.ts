@@ -9,6 +9,13 @@ interface OverlayApi {
     pickFile(): Promise<any>;
     reveal(): Promise<boolean>;
     onUpdated(fn: () => void): () => void;
+    syncNotion(url: string): Promise<{
+      ok: boolean;
+      error?: string;
+      pages?: number;
+      builds?: number;
+    }>;
+    onSyncProgress(fn: (p: { done: number; title: string }) => void): () => void;
   };
   config: {
     get(): Promise<any>;

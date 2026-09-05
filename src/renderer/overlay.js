@@ -689,13 +689,25 @@ function showEmpty(message) {
   el.replaceChildren();
   const p = document.createElement('div');
   p.textContent = message;
+
+  // 도감을 넣는 길이 둘이다 — 노션 주소를 넣거나, builds.json 파일을 고르거나.
+  // 앱에는 도감이 안 들어 있으므로(길드 내부 자료다) 여기가 처음 쓰는 사람이
+  // 맨 처음 보는 화면이다. 두 길을 다 보여주고, 설정을 열어 주기까지 한다.
+  const notion = document.createElement('button');
+  notion.textContent = '노션 도감 주소 넣기';
+  notion.onclick = () => {
+    $('teach').classList.add('hidden'); // 한 번에 하나만 (btn-settings와 같은 규칙)
+    $('settings').classList.remove('hidden');
+    $('notion-url').focus();
+  };
   const btn = document.createElement('button');
+  btn.className = 'ghost';
   btn.textContent = 'builds.json 직접 선택';
   btn.onclick = async () => {
     const r = await api.catalog.pickFile();
     if (r && r.ok) await loadCatalog({ first: true });
   };
-  el.append(p, btn);
+  el.append(p, notion, btn);
 }
 
 const hideEmpty = () => $('empty').classList.add('hidden');
@@ -754,6 +766,53 @@ $('btn-teach').addEventListener('click', () => {
     teach.classList.add('hidden');
   }
 });
+/**
+ * 노션에서 도감 받기.
+ *
+ * 숨긴 창으로 페이지를 하나씩 열어 긁어오므로 **몇 초에서 몇십 초까지** 걸린다.
+ * 그동안 아무 말이 없으면 사람은 멈춘 줄 안다 — 몇 번째 페이지를 읽고 있는지 보여준다.
+ */
+async function syncNotion() {
+  const input = /** @type {HTMLInputElement} */ ($('notion-url'));
+  const button = /** @type {HTMLButtonElement} */ ($('btn-notion'));
+  const url = input.value.trim();
+  if (!url) {
+    notionMsg('노션 도감 주소를 넣어주세요.', 'err');
+    input.focus();
+    return;
+  }
+  button.disabled = true;
+  notionMsg('노션을 여는 중…', '');
+  try {
+    const r = await api.catalog.syncNotion(url);
+    if (!r.ok) {
+      notionMsg(r.error, 'err');
+      return;
+    }
+    notionMsg(`빌드 ${r.builds}개를 받았어요 (페이지 ${r.pages}개).`, 'ok');
+    await loadCatalog({ first: true });
+  } catch (e) {
+    notionMsg(`노션에서 못 받았어요: ${e.message}`, 'err');
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function notionMsg(text, cls) {
+  const el = $('notion-msg');
+  el.textContent = text;
+  el.className = `muted ${cls || ''}`;
+}
+
+api.catalog.onSyncProgress(({ done, title }) => {
+  notionMsg(`읽는 중 ${done}쪽째 — ${title || ''}`, '');
+});
+
+$('btn-notion').addEventListener('click', syncNotion);
+$('notion-url').addEventListener('keydown', (e) => {
+  if (e.key === 'Enter') syncNotion();
+});
+
 $('teach-close').addEventListener('click', () => $('teach').classList.add('hidden'));
 $('teach-save').addEventListener('click', saveTeach);
 $('teach-value').addEventListener('keydown', (e) => {
@@ -845,6 +904,7 @@ window.addEventListener('beforeunload', stopCapture);
   const usingPreset = !state.region;
   if (usingPreset) await usePreset(false);
   state.tickMs = config.tickMs || 100;
+  /** @type {HTMLInputElement} */ ($('notion-url')).value = config.notionUrl || '';
 
   $('opacity').value = String(config.opacity ?? 88);
   applyOpacity(config.opacity ?? 88);
