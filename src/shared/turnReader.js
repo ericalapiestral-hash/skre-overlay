@@ -120,65 +120,115 @@ function binarize(gray, w, h, bright, threshold) {
  *
  * @returns {Box[]}
  */
+/**
+ * 칠하기용 자리 — 잘라 온 크기는 잘 안 바뀌므로 한 번 잡으면 계속 쓴다.
+ * 프레임마다 새로 만들면 (명암 둘 × 큰 화면) 자리를 마련하고 0으로 채우는 값만
+ * 수십 µs다. 덩어리에 물려 나가는 것은 labels 뿐이라, 이 셋은 돌려 써도 안전하다.
+ */
+let segL = new Int32Array(0);
+let segR = new Int32Array(0);
+let segY = new Int32Array(0);
+
+/**
+ * ★ **가로 줄기 단위로 칠한다** (픽셀 하나씩이 아니라).
+ *
+ * 여기가 인식기 전체의 **44%**였다. 이유는 명암을 둘 다 보기 때문이다 — 뒤집은 쪽에서는
+ * 배경이 통째로 한 덩어리가 되어, 픽셀 하나마다 이웃 아홉 칸을 들여다보는 일이
+ * 수만 번씩 돈다. 줄기 단위로 칠하면 덩어리 속은 촘촘한 반복문 한 줄로 지나간다.
+ *
+ * 8방향이므로 위아래 줄은 **양옆으로 한 칸씩 넓게** 본다 — 그게 대각선으로 이어짐이다.
+ * 위아래를 둘 다 매번 훑으므로(한 방향만 훑는 최적화를 쓰지 않는다) ㄷ자로 돌아
+ * 이어지는 모양도 빠뜨리지 않는다.
+ *
+ * 결과는 예전 방식과 **한 칸도 다르지 않아야 한다** — 테스트가 픽셀 하나씩 칠하는
+ * 코드와 맞대 본다 (test/turnReader.test.js).
+ */
 function components(bin, w, h) {
   const labels = new Int32Array(w * h); // 0 = 아직 없음, 1부터 덩어리 번호
-  const stack = new Int32Array(bin.length);
+  if (segL.length < bin.length) {
+    segL = new Int32Array(bin.length);
+    segR = new Int32Array(bin.length);
+    segY = new Int32Array(bin.length);
+  }
   const boxes = [];
 
-  for (let start = 0; start < bin.length; start += 1) {
-    if (!bin[start] || labels[start] !== 0) continue;
+  for (let y = 0, base = 0; y < h; y += 1, base += w) {
+    for (let x = 0; x < w; x += 1) {
+      const start = base + x;
+      if (!bin[start] || labels[start] !== 0) continue;
 
-    const label = boxes.length + 1;
-    let sp = 0;
-    stack[sp] = start;
-    sp += 1;
-    labels[start] = label;
+      const label = boxes.length + 1;
+      let minX = w;
+      let maxX = -1;
+      let minY = h;
+      let maxY = -1;
+      let count = 0;
+      let sp = 0;
 
-    let minX = w;
-    let maxX = -1;
-    let minY = h;
-    let maxY = -1;
-    let count = 0;
+      // 씨앗이 있는 가로 줄기를 통째로 칠하고 쌓는다
+      let l = x;
+      while (l > 0 && bin[base + l - 1] && labels[base + l - 1] === 0) l -= 1;
+      let r = x;
+      while (r < w - 1 && bin[base + r + 1] && labels[base + r + 1] === 0) r += 1;
+      for (let i = l; i <= r; i += 1) labels[base + i] = label;
+      segL[sp] = l;
+      segR[sp] = r;
+      segY[sp] = y;
+      sp += 1;
+      minX = l;
+      maxX = r;
+      minY = y;
+      maxY = y;
+      count = r - l + 1;
 
-    while (sp > 0) {
-      sp -= 1;
-      const p = stack[sp];
-      const x = p % w;
-      const y = (p / w) | 0;
-      count += 1;
-      if (x < minX) minX = x;
-      if (x > maxX) maxX = x;
-      if (y < minY) minY = y;
-      if (y > maxY) maxY = y;
-
-      for (let dy = -1; dy <= 1; dy += 1) {
-        const ny = y + dy;
-        if (ny < 0 || ny >= h) continue;
-        const row = ny * w;
-        for (let dx = -1; dx <= 1; dx += 1) {
-          const nx = x + dx;
-          if (nx < 0 || nx >= w) continue;
-          const q = row + nx;
-          if (bin[q] && labels[q] === 0) {
-            labels[q] = label;
-            stack[sp] = q;
+      while (sp > 0) {
+        sp -= 1;
+        const sl = segL[sp];
+        const sr = segR[sp];
+        const sy = segY[sp];
+        const from = sl > 0 ? sl - 1 : 0;
+        const to = sr < w - 1 ? sr + 1 : w - 1;
+        for (let d = -1; d <= 1; d += 2) {
+          const ny = sy + d;
+          if (ny < 0 || ny >= h) continue;
+          const nb = ny * w;
+          let nx = from;
+          while (nx <= to) {
+            if (!bin[nb + nx] || labels[nb + nx] !== 0) {
+              nx += 1;
+              continue;
+            }
+            let nl = nx;
+            while (nl > 0 && bin[nb + nl - 1] && labels[nb + nl - 1] === 0) nl -= 1;
+            let nr = nx;
+            while (nr < w - 1 && bin[nb + nr + 1] && labels[nb + nr + 1] === 0) nr += 1;
+            for (let i = nl; i <= nr; i += 1) labels[nb + i] = label;
+            segL[sp] = nl;
+            segR[sp] = nr;
+            segY[sp] = ny;
             sp += 1;
+            if (nl < minX) minX = nl;
+            if (nr > maxX) maxX = nr;
+            if (ny < minY) minY = ny;
+            if (ny > maxY) maxY = ny;
+            count += nr - nl + 1;
+            nx = nr + 1;
           }
         }
       }
-    }
 
-    boxes.push({
-      label,
-      labels,
-      minX,
-      minY,
-      maxX,
-      maxY,
-      w: maxX - minX + 1,
-      h: maxY - minY + 1,
-      count,
-    });
+      boxes.push({
+        label,
+        labels,
+        minX,
+        minY,
+        maxX,
+        maxY,
+        w: maxX - minX + 1,
+        h: maxY - minY + 1,
+        count,
+      });
+    }
   }
   return boxes;
 }
@@ -512,6 +562,10 @@ function cropBitmap(box, w) {
  * 템플릿 격자에 맞춰 줄인다.
  * **가로세로 비율을 지킨다** — 1은 홀쭉하고 0은 통통한데, 늘려 채우면 그 차이가 사라진다.
  */
+/** 가로 칸 경계를 미리 구해 두는 자리 (normalize 안에서만 쓴다) */
+const colFrom = new Int32Array(GRID_W + 1);
+const colTo = new Int32Array(GRID_W + 1);
+
 function normalize(bmp) {
   const scale = Math.min(GRID_W / bmp.w, GRID_H / bmp.h);
   const dw = Math.max(1, Math.round(bmp.w * scale));
@@ -519,23 +573,32 @@ function normalize(bmp) {
   const offX = Math.floor((GRID_W - dw) / 2);
   const offY = Math.floor((GRID_H - dh) / 2);
 
+  // 가로 칸 경계는 줄마다 똑같다 — 예전엔 칸마다 다시 나눠서, 나눗셈이 줄 수만큼
+  // 되풀이됐다 (24줄 × 14칸 × 2번). 한 번만 구해 두면 14번이면 끝난다.
+  for (let x = 0; x < dw; x += 1) {
+    const from = ((x * bmp.w) / dw) | 0;
+    const to = (((x + 1) * bmp.w) / dw) | 0;
+    colFrom[x] = from;
+    colTo[x] = to > from ? to : from + 1;
+  }
+
   const grid = new Uint8Array(GRID_N);
   for (let y = 0; y < dh; y += 1) {
-    const sy0 = Math.floor((y * bmp.h) / dh);
-    const sy1 = Math.max(sy0 + 1, Math.floor(((y + 1) * bmp.h) / dh));
+    const sy0 = ((y * bmp.h) / dh) | 0;
+    const sy1raw = (((y + 1) * bmp.h) / dh) | 0;
+    const sy1 = sy1raw > sy0 ? sy1raw : sy0 + 1;
+    const row = (offY + y) * GRID_W + offX;
     for (let x = 0; x < dw; x += 1) {
-      const sx0 = Math.floor((x * bmp.w) / dw);
-      const sx1 = Math.max(sx0 + 1, Math.floor(((x + 1) * bmp.w) / dw));
+      const sx0 = colFrom[x];
+      const sx1 = colTo[x];
 
       let on = 0;
-      let total = 0;
       for (let sy = sy0; sy < sy1; sy += 1) {
-        for (let sx = sx0; sx < sx1; sx += 1) {
-          total += 1;
-          on += bmp.data[sy * bmp.w + sx];
-        }
+        const base = sy * bmp.w;
+        for (let sx = sx0; sx < sx1; sx += 1) on += bmp.data[base + sx];
       }
-      if (on * 2 >= total) grid[(offY + y) * GRID_W + offX + x] = 1;
+      // 칸 수는 세지 않고 곱셈으로 — 안쪽 반복문에서 더할 것을 하나 줄인다
+      if (on * 2 >= (sy1 - sy0) * (sx1 - sx0)) grid[row + x] = 1;
     }
   }
   return grid;
@@ -577,6 +640,67 @@ function pack(grid) {
   return bits;
 }
 
+// ── 프레임마다 도는 길에서 돌려 쓰는 작업 공간.
+//
+// **낱글자 하나 갈아 두는 데 336칸짜리 배열을 넷씩 새로 만들고 있었다.** 재 보니
+// makeShape 한 번(0.039ms)이 그 모양을 템플릿 130개와 대조하는 것(0.033ms)보다
+// 오래 걸렸다 — 계산이 아니라 자리를 마련하고 0으로 채우는 값이었다.
+// 여기 있는 것들은 makeShape 안에서만, 그것도 한 번에 하나씩만 쓰인다.
+const ROW_MASK = (1 << GRID_W) - 1;
+const rowsA = new Uint32Array(GRID_H);
+const rowsB = new Uint32Array(GRID_H);
+const rowsC = new Uint32Array(GRID_H);
+const outsideBuf = new Uint8Array(GRID_N);
+const seenBuf = new Uint8Array(GRID_N);
+const stackBuf = new Int32Array(GRID_N);
+
+/** 격자 한 줄을 14비트 정수 하나로 — 부풀리기를 비트 연산으로 하려고 */
+function toRowBits(grid, out) {
+  for (let y = 0; y < GRID_H; y += 1) {
+    const base = y * GRID_W;
+    let r = 0;
+    for (let x = 0; x < GRID_W; x += 1) if (grid[base + x]) r |= 1 << x;
+    out[y] = r;
+  }
+  return out;
+}
+
+/** 14비트 줄들을 32비트 낱말로 — 비트 자리는 pack(i = y*GRID_W + x)과 똑같다 */
+function packRows(rows) {
+  const bits = new Uint32Array(WORDS);
+  for (let y = 0; y < GRID_H; y += 1) {
+    const r = rows[y];
+    if (r === 0) continue;
+    const at = y * GRID_W;
+    const wi = at >>> 5;
+    const off = at & 31;
+    bits[wi] |= r << off;
+    // 줄이 낱말 경계를 넘어갈 때만 다음 낱말로 흘린다.
+    // (off가 0일 때 r >>> 32 는 JS에서 r >>> 0 = r 이라 그냥 하면 틀린다)
+    if (off + GRID_W > 32) bits[wi + 1] |= r >>> (32 - off);
+  }
+  return bits;
+}
+
+/**
+ * 한 칸 부풀린 줄들. 좌우는 비트 밀기, 위아래는 이웃 줄과 OR.
+ *
+ * 마스크가 14비트를 넘어간 비트를 잘라 주므로 옆 줄로 새지 않는다 — 원래 dilate가
+ * 가장자리에서 자리를 붙드는 것과 결과가 같다 (테스트가 둘을 맞대 본다).
+ * tmp와 out은 서로 다른 배열이어야 한다: 위아래를 OR할 때 아직 안 본 줄을
+ * 덮어쓰면 안 된다.
+ */
+function dilateRows(rows, tmp, out) {
+  for (let y = 0; y < GRID_H; y += 1) {
+    const r = rows[y];
+    tmp[y] = (r | (r << 1) | (r >>> 1)) & ROW_MASK;
+  }
+  for (let y = 0; y < GRID_H; y += 1) {
+    out[y] = tmp[y] | (y > 0 ? tmp[y - 1] : 0) | (y < GRID_H - 1 ? tmp[y + 1] : 0);
+  }
+  return out;
+}
+
 /**
  * 대조에 바로 쓸 수 있게 미리 갈아 둔 모양.
  *
@@ -588,10 +712,12 @@ function pack(grid) {
  * @returns {Shape}
  */
 function makeShape(grid) {
-  const bits = pack(grid);
+  // 격자 → 줄 비트 → 낱말. dilate(Uint8Array 한 장)를 거치지 않는다
+  const rows = toRowBits(grid, rowsA);
+  const bits = packRows(rows);
   let on = 0;
   for (let i = 0; i < WORDS; i += 1) on += popcount(bits[i]);
-  return { bits, dil: pack(dilate(grid)), on, hole: holeInfo(grid) };
+  return { bits, dil: packRows(dilateRows(rows, rowsB, rowsC)), on, hole: holeInfo(grid) };
 }
 
 /**
@@ -636,38 +762,74 @@ function similarity(a, b, exactWeight = 0.5) {
  * @returns {{count: number, y: number}} y는 구멍 픽셀의 세로 중심(0~1), 구멍이 없으면 -1
  */
 function holeInfo(grid) {
-  const outside = new Uint8Array(GRID_N);
-  const stack = new Int32Array(GRID_N);
+  // ★ 클로저(push·step)와 새 배열을 쓰지 말 것 — 여기가 프레임마다 수십 번 도는 자리다.
+  //
+  // 예전엔 안쪽 while 마다 step 클로저를 **새로 만들었고**, 그 클로저가 sp를 붙잡는
+  // 바람에 픽셀마다 힙을 들락거렸다. 배열 셋도 부를 때마다 새로 만들었다.
+  // 읽기는 편했지만 makeShape 한 번이 템플릿 130개와 대조하는 것보다 오래 걸렸다.
+  const outside = outsideBuf;
+  const seen = seenBuf;
+  const stack = stackBuf;
+  outside.fill(0);
+  seen.fill(0);
   let sp = 0;
-  const push = (x, y) => {
-    if (x < 0 || x >= GRID_W || y < 0 || y >= GRID_H) return;
-    const i = y * GRID_W + x;
-    if (grid[i] || outside[i]) return;
-    outside[i] = 1;
-    stack[sp] = i;
-    sp += 1;
-  };
 
+  // 가장자리에서 시작해 "바깥"을 칠한다 — 여기 안 닿는 빈칸이 곧 구멍이다
   for (let x = 0; x < GRID_W; x += 1) {
-    push(x, 0);
-    push(x, GRID_H - 1);
+    const top = x;
+    if (!grid[top] && !outside[top]) {
+      outside[top] = 1;
+      stack[sp] = top;
+      sp += 1;
+    }
+    const bottom = (GRID_H - 1) * GRID_W + x;
+    if (!grid[bottom] && !outside[bottom]) {
+      outside[bottom] = 1;
+      stack[sp] = bottom;
+      sp += 1;
+    }
   }
   for (let y = 0; y < GRID_H; y += 1) {
-    push(0, y);
-    push(GRID_W - 1, y);
+    const left = y * GRID_W;
+    if (!grid[left] && !outside[left]) {
+      outside[left] = 1;
+      stack[sp] = left;
+      sp += 1;
+    }
+    const right = left + GRID_W - 1;
+    if (!grid[right] && !outside[right]) {
+      outside[right] = 1;
+      stack[sp] = right;
+      sp += 1;
+    }
   }
   while (sp > 0) {
     sp -= 1;
     const p = stack[sp];
     const x = p % GRID_W;
     const y = (p / GRID_W) | 0;
-    push(x - 1, y);
-    push(x + 1, y);
-    push(x, y - 1);
-    push(x, y + 1);
+    if (x > 0 && !grid[p - 1] && !outside[p - 1]) {
+      outside[p - 1] = 1;
+      stack[sp] = p - 1;
+      sp += 1;
+    }
+    if (x < GRID_W - 1 && !grid[p + 1] && !outside[p + 1]) {
+      outside[p + 1] = 1;
+      stack[sp] = p + 1;
+      sp += 1;
+    }
+    if (y > 0 && !grid[p - GRID_W] && !outside[p - GRID_W]) {
+      outside[p - GRID_W] = 1;
+      stack[sp] = p - GRID_W;
+      sp += 1;
+    }
+    if (y < GRID_H - 1 && !grid[p + GRID_W] && !outside[p + GRID_W]) {
+      outside[p + GRID_W] = 1;
+      stack[sp] = p + GRID_W;
+      sp += 1;
+    }
   }
 
-  const seen = new Uint8Array(GRID_N);
   let holes = 0;
   let sumY = 0;
   let count = 0;
@@ -685,18 +847,26 @@ function holeInfo(grid) {
       const y = (p / GRID_W) | 0;
       sumY += y;
       count += 1;
-      const step = (nx, ny) => {
-        if (nx < 0 || nx >= GRID_W || ny < 0 || ny >= GRID_H) return;
-        const q = ny * GRID_W + nx;
-        if (grid[q] || outside[q] || seen[q]) return;
-        seen[q] = 1;
-        stack[sp] = q;
+      if (x > 0 && !grid[p - 1] && !outside[p - 1] && !seen[p - 1]) {
+        seen[p - 1] = 1;
+        stack[sp] = p - 1;
         sp += 1;
-      };
-      step(x - 1, y);
-      step(x + 1, y);
-      step(x, y - 1);
-      step(x, y + 1);
+      }
+      if (x < GRID_W - 1 && !grid[p + 1] && !outside[p + 1] && !seen[p + 1]) {
+        seen[p + 1] = 1;
+        stack[sp] = p + 1;
+        sp += 1;
+      }
+      if (y > 0 && !grid[p - GRID_W] && !outside[p - GRID_W] && !seen[p - GRID_W]) {
+        seen[p - GRID_W] = 1;
+        stack[sp] = p - GRID_W;
+        sp += 1;
+      }
+      if (y < GRID_H - 1 && !grid[p + GRID_W] && !outside[p + GRID_W] && !seen[p + GRID_W]) {
+        seen[p + GRID_W] = 1;
+        stack[sp] = p + GRID_W;
+        sp += 1;
+      }
     }
   }
   return { count: holes, y: count ? sumY / count / (GRID_H - 1) : -1 };

@@ -243,6 +243,153 @@ test('상한 가지치기를 해도 전부 대조한 것과 결과가 같다', (
   }
 });
 
+test('비트로 부풀린 모양이 칸마다 부풀린 것과 같다', () => {
+  // makeShape 가 낱글자 하나마다 336칸짜리 배열을 넷씩 새로 만들고 있었다 —
+  // 한 번(0.039ms)이 템플릿 130개와 대조하는 것(0.033ms)보다 오래 걸렸다.
+  // 지금은 줄을 14비트 정수로 보고 밀어서 부풀린다. **가장자리에서 옆 줄로 새면**
+  // 모양이 달라지고 그건 곧 오독이라, 느리지만 확실한 dilate 와 맞대 본다.
+  const words = Math.ceil((GRID_W * GRID_H) / 32);
+  const packSlow = (g) => {
+    const bits = new Uint32Array(words);
+    for (let i = 0; i < g.length; i += 1) if (g[i]) bits[i >>> 5] |= 1 << (i & 31);
+    return bits;
+  };
+
+  let seed = 987654;
+  const rnd = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  const grids = [];
+  // 진짜 템플릿 (실제로 쓰는 모양)
+  for (const list of GROUPS.values()) for (const t of list) grids.push(toGrid(t.rows));
+  // 가장자리를 건드리는 모양들 — 여기서 새면 바로 드러난다
+  const edge = (fn) => {
+    const g = new Uint8Array(GRID_W * GRID_H);
+    for (let y = 0; y < GRID_H; y += 1) for (let x = 0; x < GRID_W; x += 1) if (fn(x, y)) g[y * GRID_W + x] = 1;
+    return g;
+  };
+  grids.push(edge(() => false)); // 빈 것
+  grids.push(edge(() => true)); // 꽉 찬 것
+  grids.push(edge((x) => x === 0)); // 왼쪽 끝 줄
+  grids.push(edge((x) => x === GRID_W - 1)); // 오른쪽 끝 줄
+  grids.push(edge((_x, y) => y === 0));
+  grids.push(edge((_x, y) => y === GRID_H - 1));
+  grids.push(edge((x, y) => x === 0 && y === 0));
+  grids.push(edge((x, y) => x === GRID_W - 1 && y === GRID_H - 1));
+  for (let i = 0; i < 40; i += 1) grids.push(edge(() => rnd() < 0.3));
+
+  for (const grid of grids) {
+    const shape = makeShape(grid);
+    assert.deepStrictEqual([...shape.bits], [...packSlow(grid)], '모양 자체가 다르다');
+    assert.deepStrictEqual([...shape.dil], [...packSlow(dilate(grid))], '부풀린 모양이 다르다');
+  }
+});
+
+test('가로 줄기로 칠한 덩어리가 픽셀 하나씩 칠한 것과 같다', () => {
+  // components 가 인식기 전체의 44%였다 (명암을 둘 다 보니, 뒤집은 쪽에서는 배경이
+  // 통째로 한 덩어리가 된다). 가로 줄기 단위로 칠하도록 바꿨는데, **한 칸이라도
+  // 다르면 자릿수가 달라지고 그건 곧 오독**이다. 그래서 느리지만 확실한 방식과 맞대 본다.
+  const slow = (bin, w, h) => {
+    const labels = new Int32Array(w * h);
+    const stack = new Int32Array(bin.length);
+    const out = [];
+    for (let start = 0; start < bin.length; start += 1) {
+      if (!bin[start] || labels[start] !== 0) continue;
+      const label = out.length + 1;
+      let sp = 0;
+      stack[sp] = start;
+      sp += 1;
+      labels[start] = label;
+      let minX = w;
+      let maxX = -1;
+      let minY = h;
+      let maxY = -1;
+      let count = 0;
+      while (sp > 0) {
+        sp -= 1;
+        const p = stack[sp];
+        const x = p % w;
+        const y = (p / w) | 0;
+        count += 1;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+        for (let dy = -1; dy <= 1; dy += 1) {
+          const ny = y + dy;
+          if (ny < 0 || ny >= h) continue;
+          const row = ny * w;
+          for (let dx = -1; dx <= 1; dx += 1) {
+            const nx = x + dx;
+            if (nx < 0 || nx >= w) continue;
+            const q = row + nx;
+            if (bin[q] && labels[q] === 0) {
+              labels[q] = label;
+              stack[sp] = q;
+              sp += 1;
+            }
+          }
+        }
+      }
+      out.push({ label, minX, minY, maxX, maxY, w: maxX - minX + 1, h: maxY - minY + 1, count });
+    }
+    return { boxes: out, labels };
+  };
+
+  const strip = (b) => ({
+    label: b.label,
+    minX: b.minX,
+    minY: b.minY,
+    maxX: b.maxX,
+    maxY: b.maxY,
+    w: b.w,
+    h: b.h,
+    count: b.count,
+  });
+
+  // 씨 고정 난수 — 실패하면 언제나 같은 그림으로 다시 볼 수 있어야 한다
+  let seed = 12345;
+  const rnd = () => {
+    seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+    return seed / 0x7fffffff;
+  };
+  for (const [w, h, density] of [[1, 1, 0.5], [1, 40, 0.5], [40, 1, 0.5], [7, 5, 0.5],
+                                 [31, 17, 0.15], [31, 17, 0.5], [31, 17, 0.85],
+                                 [64, 40, 0.35], [64, 40, 0.7]]) {
+    for (let trial = 0; trial < 12; trial += 1) {
+      const bin = new Uint8Array(w * h);
+      for (let i = 0; i < bin.length; i += 1) bin[i] = rnd() < density ? 1 : 0;
+      const fast = components(bin, w, h);
+      const ref = slow(bin, w, h);
+      assert.deepStrictEqual(
+        fast.map(strip),
+        ref.boxes,
+        `${w}×${h} 밀도 ${density} #${trial}: 덩어리가 다르다`,
+      );
+      // 라벨 지도까지 같아야 한다 — cropBitmap이 이걸로 글자를 오려 낸다
+      assert.deepStrictEqual(
+        [...(fast[0] ? fast[0].labels : new Int32Array(0))],
+        [...(fast.length ? ref.labels : new Int32Array(0))],
+        `${w}×${h} 밀도 ${density} #${trial}: 라벨 지도가 다르다`,
+      );
+    }
+  }
+
+  // 실제 표본으로도 (난수 그림에는 없는 모양이 있다)
+  const s = sample((x) => x.value === 12 && x.height === 44 && !x.invert);
+  if (s) {
+    for (const bright of [true, false]) {
+      const bin = binarize(s.gray, s.w, s.h, bright);
+      assert.deepStrictEqual(
+        components(bin, s.w, s.h).map(strip),
+        slow(bin, s.w, s.h).boxes,
+        `실제 표본(명암 ${bright})에서 덩어리가 다르다`,
+      );
+    }
+  }
+});
+
 test('비트로 센 닮음 점수가 칸마다 센 것과 같다', () => {
   const slow = (a, b, ew) => {
     let both = 0;
@@ -373,7 +520,7 @@ test('문턱값은 한 번이면 충분하다 — 여러 번은 오히려 나쁘
 
 test('한 장 읽는 시간이 예산 안에 있다', { skip: !loadFixtures() }, () => {
   // 인식 시간은 곧 인식 주기의 하한이다. 예전 구조(대조마다 부풀리기를 다시 계산)는
-  // 14ms였고, 그래서 주기를 600ms로 잡을 수밖에 없었다. 지금은 1~2ms다.
+  // 14ms였고, 그래서 주기를 600ms로 잡을 수밖에 없었다. 지금은 0.8ms 안팎이다.
   // 여기 걸린 값은 느린 기계에서도 통과할 만큼 넉넉하게 잡았다 — 구조가 무너지면
   // 열 배 단위로 나빠지므로 이 정도로도 회귀는 잡힌다.
   const r = bench({});
