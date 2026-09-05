@@ -155,6 +155,50 @@ test('한 바퀴 — 엔진에 넣은 것을 기록해서 재생하면 같은 �
   );
 });
 
+test('한 바퀴 — 전투가 끝나 쉬는 구간이 끼어도 같은 결론이 나온다', { skip: !loadFixtures() }, () => {
+  // ★ 엔진은 쉬기 시작한 프레임에서 **읽기 기억을 지운다** (engine.feed). 그걸 기록에
+  // 안 적으면, 재생할 때만 옛 기억을 들고 가서 궤적이 그때와 달라진다 — 기록을 받아도
+  // 못 믿게 된다. 결과 화면 → 다음 전투까지를 한 바퀴 돌려 잠근다.
+  const data = loadFixtures();
+  const pick = (v) => {
+    const s = data.samples.find((x) => x.value === v && x.height === 44 && !x.invert);
+    return s ? { gray: new Uint8Array(Buffer.from(s.gray, 'base64')), w: s.w, h: s.h } : null;
+  };
+  const eight = pick(8);
+  assert.ok(eight);
+  // 결과 화면은 **멈춰 있다** — 크기를 크롭과 맞춰야 그림 신호가 걸린다
+  const still = { gray: new Uint8Array(eight.w * eight.h).fill(28), w: eight.w, h: eight.h };
+
+  let t = 0;
+  const engine = createEngine({ templates: TEMPLATES, now: () => (t += 100) });
+  engine.setFlow(GROUPS, {});
+  const rec = createRecorder({ now: () => t });
+  rec.setFlow(engine.flow, { build: '시험' });
+
+  const live = [];
+  const feed = (f) => {
+    const r = engine.feed(f.gray, f.w, f.h);
+    rec.frame(r, { gray: f.gray, w: f.w, h: f.h, now: t });
+    live.push(r.index);
+    return r;
+  };
+  for (let i = 0; i < 4; i += 1) feed(eight); // 전투 중
+  for (let i = 0; i < 30; i += 1) feed(still); // 결과 화면
+  assert.strictEqual(engine.resting, true, '결과 화면을 안 알아챘다');
+  for (let i = 0; i < 4; i += 1) feed(eight); // 다음 전투
+
+  const dumped = JSON.parse(JSON.stringify(rec.dump()));
+  const rests = dumped.frames.filter((f) => f.rest);
+  assert.strictEqual(rests.length, 1, `쉬기 시작한 프레임이 ${rests.length}개 적혔다`);
+
+  assert.deepStrictEqual(replay(dumped).map((x) => x.index), live, '재생 결과가 실제와 다르다');
+  assert.deepStrictEqual(
+    run(toScenario(dumped, '쉬는 구간')).map((x) => x.index),
+    live,
+    '시나리오로 뽑으면 결과가 달라진다',
+  );
+});
+
 test('기록 프레임의 시각이 고르지 않아도 재생된다', () => {
   // 실제 캡처는 100ms에 딱 맞춰 오지 않는다. 시나리오 러너가 t를 봐야 하는 이유다.
   //

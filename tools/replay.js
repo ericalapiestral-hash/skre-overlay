@@ -41,6 +41,9 @@ function replay(rec, { from = 0, to = Infinity } = {}) {
       trace.push({ i, t: f.t, frame: f, index: follower.index, why: 'note', turn: follower.turn });
       return;
     }
+    // 엔진은 쉬기 시작한 프레임에서 읽기 기억을 지운다 (engine.feed) — 여기서도
+    // 같이 지워야 궤적이 그때와 같아진다
+    if (f.rest) follower.reset();
     const r = follower.push(toReading(f), f.t);
     trace.push({ i, t: f.t, frame: f, index: r.index, why: r.why, turn: r.turn });
   });
@@ -50,6 +53,7 @@ function replay(rec, { from = 0, to = Infinity } = {}) {
 function show(f) {
   if (typeof f.set === 'number') return `손→${f.set}`;
   if (f.why === 'note') return `※${f.note}`;
+  if (f.rest) return ' 쉼';
   // 최대 턴과 안 맞아 버린 프레임 — 못 읽은 것과 갈라서 보여준다
   if (f.drop !== undefined) return `✕${String(f.drop).padStart(2)}`;
   if (f.v === null || f.v === undefined) return '  —';
@@ -116,7 +120,9 @@ function toScenario(rec, name, { from = 0, to = Infinity } = {}) {
       .filter((f) => f.why !== 'note')
       .map((f) => {
         if (typeof f.set === 'number') return { set: f.set, t: f.t - base };
-        if (f.v === null || f.v === undefined) return { t: f.t - base, v: null };
+        if (f.v === null || f.v === undefined) {
+          return f.rest ? { t: f.t - base, v: null, rest: true } : { t: f.t - base, v: null };
+        }
         return f.c !== undefined && f.c < 0.86
           ? { t: f.t - base, v: f.v, weak: true }
           : { t: f.t - base, v: f.v };

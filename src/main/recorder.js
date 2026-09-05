@@ -36,10 +36,12 @@ const SAMPLE_CAPS = {
 const MAX_SAMPLE_BYTES = 6 * 1024 * 1024;
 
 /**
- * @typedef {{t: number, v: number|null, c?: number, drop?: number,
+ * @typedef {{t: number, v: number|null, c?: number, drop?: number, rest?: boolean,
  *            i: number, why: string, set?: number, note?: string}} Frame
  *   drop 최대 턴과 안 맞아 **버린** 값. v 는 null 이지만(추적기가 본 그대로)
  *        되돌려 볼 때는 "못 읽은 것"과 "버린 것"을 갈라 봐야 한다
+ *   rest 이 프레임에서 **전투가 끝났다고 보고 쉬기 시작했다.** 엔진은 그때 읽기
+ *        기억을 지운다 — 되돌려 볼 때 같이 지우지 않으면 궤적이 어긋난다
  * @typedef {{t: number, w: number, h: number, gray: string, kind: string,
  *            read: number|null, conf: number}} Sample
  */
@@ -61,6 +63,8 @@ function createRecorder(options = {}) {
   const counts = { unread: 0, weak: 0 };
   /** @type {Map<number, number>} 값마다 몇 장 */
   const perValue = new Map();
+  /** 직전 프레임이 쉬는 중이었나 — 쉬기 **시작한** 프레임만 적는다 */
+  let wasResting = false;
   /** @type {Array<{turn: number, label: string}>} */
   let steps = [];
   /** @type {Record<string, any>} */
@@ -89,7 +93,7 @@ function createRecorder(options = {}) {
    * 프레임 하나. gray를 같이 주면 표본으로 담길 수도 있다.
    *
    * @param {{raw: number|null, confidence: number, index: number, why: string,
-   *          dropped?: number|null}} r 엔진이 돌려준 결과
+   *          dropped?: number|null, resting?: boolean}} r 엔진이 돌려준 결과
    * @param {{gray?: Uint8Array, w?: number, h?: number, strongScore?: number,
    *          now?: number}} [frameData]
    */
@@ -100,6 +104,10 @@ function createRecorder(options = {}) {
     if (r.raw !== null) f.c = Math.round(r.confidence * 1000) / 1000;
     // 최대 턴과 안 맞아 버린 프레임은 그렇다고 적어 둔다 — 못 읽은 것과 원인이 다르다
     if (r.dropped !== null && r.dropped !== undefined) f.drop = r.dropped;
+    // 쉬기 시작한 프레임 — 엔진이 여기서 읽기 기억을 지웠다
+    const resting = r.resting === true;
+    if (resting && !wasResting) f.rest = true;
+    wasResting = resting;
     pushFrame(f);
 
     const { gray, w, h, strongScore = 0.86 } = frameData;
@@ -146,6 +154,7 @@ function createRecorder(options = {}) {
     counts.unread = 0;
     counts.weak = 0;
     perValue.clear();
+    wasResting = false;
     startedAt = null;
   }
 

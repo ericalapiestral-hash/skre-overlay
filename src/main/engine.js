@@ -12,19 +12,24 @@
 const { readTurn, loadTemplates, gridToRows } = require('../shared/turnReader');
 const { createFollower } = require('../shared/follower');
 const { createMaxTurnWatch } = require('../shared/maxTurn');
+const { createBattleEndWatch } = require('../shared/battleEnd');
 const { flatten } = require('../shared/steps');
 
 /**
  * @typedef {{turn: number, label: string}} FlowStep
  * @typedef {{index: number, moved: boolean, turn: number|null, raw: number|null,
  *            confidence: number, hidden: boolean, hiddenMs: number,
- *            why: string, max: number|null, dropped: number|null}} FeedResult
+ *            why: string, max: number|null, dropped: number|null,
+ *            resting: boolean, restWhy: string}} FeedResult
  *   max     지금 믿고 있는 최대 턴 (`16 / 70` 의 70). 모르면 null
  *   dropped 최대 턴과 안 맞아서 **버린** 값. 상태줄에 왜 멈췄는지 보여주려고 둔다
+ *   resting 전투가 끝난 것 같아 **쉬는 중**. 화면은 이때 인식 주기를 늦춘다
+ *           (shared/battleEnd.js). 턴이 다시 보이면 스스로 풀린다
+ *   restWhy 왜 쉬는지 — 'still'(화면이 멈춰 있다) | 'blind'(오래 못 읽었다)
  */
 
 /**
- * @param {{templates?: any[], follower?: object, maxTurn?: object,
+ * @param {{templates?: any[], follower?: object, maxTurn?: object, battleEnd?: object,
  *          now?: () => number}} [options]
  *   now 시계 — 테스트에서 프레임 시각을 직접 넣으려고 바꿔 끼울 수 있다
  */
@@ -38,6 +43,8 @@ function createEngine(options = {}) {
   let active = templates;
   // 최대 턴은 전투 내내 안 바뀐다 — 알아내면 지금 턴의 자릿수와 상한이 정해진다
   const maxTurn = createMaxTurnWatch(options.maxTurn);
+  // 전투가 끝나면(결과 화면) 쉰다 — 턴이 다시 보이면 스스로 깨어난다
+  const endWatch = createBattleEndWatch(options.battleEnd);
 
   /** 기본 대조표 + 사용자가 가르친 대조표 */
   function setTemplates(builtin, userJson) {
@@ -65,6 +72,7 @@ function createEngine(options = {}) {
     follower = createFollower(flow, { ...followerOptions, index: steps.length ? index : 0 });
     // 빌드를 바꿨으면 다른 전투일 수 있다 — 최대 턴도 처음부터 다시 본다
     maxTurn.reset();
+    endWatch.reset();
     return { steps, index: follower.index };
   }
 
@@ -108,6 +116,7 @@ function createEngine(options = {}) {
   function reset() {
     follower.reset();
     maxTurn.reset();
+    endWatch.reset();
   }
 
   /**
@@ -128,6 +137,16 @@ function createEngine(options = {}) {
     // 최대 턴이 안 맞는 프레임은 슬래시를 엉뚱한 데서 잘랐다는 뜻이라 왼쪽도 못 믿는다.
     // 추적기에는 "가려짐"으로 들어간다 — 못 읽은 것과 똑같이 그 자리에 머문다.
     const trusted = verdict.trust ? got : null;
+
+    // 전투가 끝났는지. 막 쉬기 시작한 프레임에서 **읽기 기억을 지운다** — 다음 전투는
+    // 최대 턴도 다르고 턴도 처음부터다. 단계 위치는 그대로 둔다(지우면 오검출 한 번에
+    // 사람이 보던 자리를 잃는다). 새 전투가 0턴으로 시작하면 추적기가 알아서 따라간다.
+    const rest = endWatch.see(trusted !== null, gray, w, h, now);
+    if (rest.entered) {
+      follower.reset();
+      maxTurn.reset();
+    }
+
     const r = follower.push(trusted, now);
     return {
       index: r.index,
@@ -140,6 +159,8 @@ function createEngine(options = {}) {
       why: r.why,
       max: maxTurn.known,
       dropped: !verdict.trust && got ? got.value : null,
+      resting: rest.over,
+      restWhy: rest.why,
     };
   }
 
@@ -162,6 +183,10 @@ function createEngine(options = {}) {
     /** 지금 믿는 최대 턴 — 진단·시험용 */
     get maxTurn() {
       return maxTurn.known;
+    },
+    /** 전투가 끝난 것 같아 쉬는 중인가 */
+    get resting() {
+      return endWatch.over;
     },
   };
 }

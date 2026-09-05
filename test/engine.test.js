@@ -283,3 +283,59 @@ test('가르치기는 못 읽는 화면에서도 모양을 뽑는다', { skip: !
   const got = e.teachFrom(f.gray, f.w, f.h, '12');
   assert.strictEqual(got.ok, true, `대조표가 빈약해도 잘라는 낸다: ${JSON.stringify(got)}`);
 });
+
+test('전투가 끝난 화면에서는 쉬고, 턴이 돌아오면 깨어난다', { skip: !loadFixtures() && '표본이 없다' }, () => {
+  let t = 0;
+  const e = createEngine({ templates: TEMPLATES, now: () => (t += 100) });
+  e.setFlow(GROUPS, {});
+  const f = frameFor(8);
+  assert.ok(f);
+  for (let i = 0; i < 3; i += 1) e.feed(f.gray, f.w, f.h);
+  assert.strictEqual(e.index, 2);
+  assert.strictEqual(e.resting, false);
+
+  // 결과 화면 — 턴이 없고 그림이 멈춰 있다
+  const still = new Uint8Array(f.w * f.h).fill(28);
+  let r = null;
+  for (let i = 0; i < 25 && !e.resting; i += 1) r = e.feed(still, f.w, f.h);
+  assert.strictEqual(e.resting, true, '결과 화면인데 계속 읽고 있다');
+  assert.ok(r);
+  assert.strictEqual(r.restWhy, 'still');
+  assert.strictEqual(e.index, 2, '쉰다고 사람이 보던 자리를 잃으면 안 된다');
+
+  // 다음 전투가 시작됐다
+  const back = e.feed(f.gray, f.w, f.h);
+  assert.strictEqual(back.resting, false, '턴이 보이는데도 쉬고 있다');
+  assert.strictEqual(e.resting, false);
+});
+
+test('쉬기 시작하면 최대 턴을 잊는다', { skip: !pairFrame('16/70') && '표본이 없다' }, () => {
+  // 다음 전투는 최대 턴이 다를 수 있다 (파괴신 70 · 다른 콘텐츠는 다른 값).
+  // 옛 값을 들고 있으면 새 전투의 프레임을 전부 "최대 턴이 안 맞는다"고 버린다.
+  let t = 0;
+  const e = createEngine({ templates: TEMPLATES, now: () => (t += 100) });
+  e.setFlow(GROUPS, {});
+  const f = pairFrame('16/70');
+  assert.ok(f);
+  for (let i = 0; i < 3; i += 1) e.feed(f.gray, f.w, f.h);
+  assert.strictEqual(e.maxTurn, 70);
+
+  const still = new Uint8Array(f.w * f.h).fill(28);
+  for (let i = 0; i < 25 && !e.resting; i += 1) e.feed(still, f.w, f.h);
+  assert.strictEqual(e.resting, true);
+  assert.strictEqual(e.maxTurn, null, '옛 전투의 최대 턴을 들고 있으면 안 된다');
+});
+
+test('턴 영역이 잘못 잡혔으면 쉬지 않는다', () => {
+  // 한 번도 못 읽은 채로 쉬어 버리면 "쉬는 중"이라는 말이 뜨고, 사람은 잘 돌고 있는
+  // 줄 안다. 그때 나와야 하는 말은 "영역을 다시 잡으세요"다.
+  let t = 0;
+  const e = createEngine({ templates: TEMPLATES, now: () => (t += 100) });
+  e.setFlow(GROUPS, {});
+  const blank = new Uint8Array(80 * 40).fill(28);
+  for (let i = 0; i < 200; i += 1) {
+    const r = e.feed(blank, 80, 40);
+    assert.strictEqual(r.resting, false, `${i}번째 프레임에 쉬어 버렸다`);
+  }
+  assert.strictEqual(e.feed(blank, 80, 40).hidden, true, '대신 "가려짐"으로 알린다');
+});

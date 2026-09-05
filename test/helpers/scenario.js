@@ -22,6 +22,9 @@ function run(scenario) {
       trace.push({ i, frame, index, why: 'set', turn: follower.turn });
       return;
     }
+    // {"rest": true} — 이 프레임에서 전투가 끝났다고 보고 쉬기 시작했다.
+    // 엔진이 그때 읽기 기억을 지우므로(engine.feed) 여기서도 지운다.
+    if (frame && typeof frame === 'object' && frame.rest) follower.reset();
     let reading = null;
     if (typeof frame === 'number') reading = { value: frame, confidence: 0.95 };
     else if (frame && typeof frame === 'object' && frame.v !== null && frame.v !== undefined) {

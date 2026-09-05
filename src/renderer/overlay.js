@@ -36,6 +36,8 @@ const state = {
   lastFrame: null,
   /** @type {number|null} 마지막으로 읽힌 턴 값 — [가르치기]에 미리 채워 준다 */
   lastRead: null,
+  /** 전투가 끝난 것 같아 쉬는 중 — 인식 주기를 늦춘다 (엔진이 정한다) */
+  resting: false,
   stats: null,
   file: '',
 };
@@ -318,6 +320,14 @@ const nav = (delta) => jumpTo(state.index + delta);
 /** @type {MediaStream|null} */
 let media = null;
 let timer = null;
+/**
+ * 쉬는 중일 때의 인식 간격 (ms).
+ *
+ * 전투가 끝나면(결과 화면) 턴이 없으니 100ms마다 읽을 이유가 없다. 그렇다고 아예
+ * 멈추면 다음 전투를 스스로 못 알아채므로, **1초에 한 번만** 본다. 턴이 다시 보이는
+ * 순간 원래 주기로 돌아간다 — 그래서 긴 연출을 결과 화면으로 잘못 봐도 1초만 잃는다.
+ */
+const REST_TICK_MS = 1000;
 /** 화면이 한동안 안 올 때를 대비한 안전줄 */
 let watchdog = null;
 /** requestVideoFrameCallback 핸들 */
@@ -383,7 +393,10 @@ function onFrame() {
   // 도착이 조금이라도 이르면 그 장을 흘려보내고 다음 장(두 배 뒤)을 기다리기 때문이다.
   // 우리가 정하는 건 캡처 장수이므로, 온 장은 다 읽는 게 맞다. 낮춰도 폭주하지 않는다 —
   // 장수 제약이 무시돼 훨씬 빨리 오는 환경에서도 이 문턱이 상한이 된다.
-  if (now - lastProcessed >= 500 / state.captureFps) {
+  // 쉬는 중에는 주기를 늦춘다 (위 REST_TICK_MS). 캡처 스트림은 그대로 두는데,
+  // 비싼 쪽은 크롭·확대·인식이라 그걸 안 하는 것만으로 부담이 거의 사라진다.
+  const gate = state.resting ? REST_TICK_MS : 500 / state.captureFps;
+  if (now - lastProcessed >= gate) {
     measureRate(now);
     lastProcessed = now;
     tick();
@@ -512,6 +525,7 @@ async function tick() {
     // 제대로 갈랐는지 사람이 한눈에 확인할 수 있는 자리다
     if (r.turn !== null) $('turn').textContent = r.max ? `${r.turn} / ${r.max}` : `${r.turn}턴`;
     if (r.raw !== null) state.lastRead = r.raw; // [가르치기]를 열 때 미리 채워 준다
+    state.resting = r.resting;
     if (r.index !== state.index) {
       state.index = r.index;
       highlightStep();
@@ -526,6 +540,17 @@ async function tick() {
 
 /** 인식 상태를 사람 말로 — 안 될 때 뭘 해야 하는지, 왜 안 움직이는지까지 알려준다 */
 function reportStatus(r) {
+  // 전투가 끝난 것 같아 쉬는 중 — 왜 쉬는지와 **스스로 깨어난다는 것**을 같이 말한다.
+  // 이 말이 없으면 사람은 오버레이가 죽은 줄 알고 [자동]을 껐다 켠다.
+  if (r.resting) {
+    setStatus(
+      r.restWhy === 'still'
+        ? '전투가 끝난 것 같아 쉬는 중 — 다음 전투가 시작되면 저절로 다시 읽어요.'
+        : '턴이 한참 안 보여서 쉬는 중 — 턴이 다시 보이면 저절로 다시 읽어요.',
+      '',
+    );
+    return;
+  }
   // 최대 턴과 안 맞아 버린 프레임 — "왜 안 넘어가지?"의 답이 되는 자리다.
   // 슬래시를 엉뚱한 데서 잘랐다는 뜻이라 그 프레임은 통째로 안 믿는다.
   if (r.dropped !== null && r.dropped !== undefined) {
@@ -572,6 +597,7 @@ async function toggleAuto(on) {
 
   if (!on) {
     stopCapture();
+    state.resting = false;
     $('rate').textContent = '';
     setStatus(state.region ? '자동 꺼짐 — 켜면 턴을 읽습니다.' : '턴 영역을 아직 지정하지 않았어요.', '');
     return;
@@ -583,6 +609,7 @@ async function toggleAuto(on) {
       return;
     }
     await api.engine.reset();
+    state.resting = false;
     lastProcessed = 0; // 켜자마자 한 장 읽는다 (한 주기를 기다리지 않게)
     rateMs = 0;
     pump();
