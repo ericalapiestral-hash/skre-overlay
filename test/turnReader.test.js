@@ -321,6 +321,34 @@ test('처음 보는 폰트에서 정확도와 오독이 기준을 지킨다', { 
   assert.ok(ok >= 0.98, `정답 ${(ok * 100).toFixed(1)}% — 98% 아래로 떨어지면 안 된다`);
 });
 
+test('최대 턴을 알면 마지막 오독이 사라진다', { skip: !loadFixtures() }, () => {
+  // 앱은 화면에서 최대 턴("16 / 70"의 70)을 스스로 알아낸다 (shared/maxTurn.js).
+  // 알고 나면 **지금 턴의 자릿수가 정해진다** — 70턴 전투에서 세 자리는 있을 수 없다.
+  // 남아 있던 오독 2장(44px "8"이 구멍까지 세 덩어리로 잡혀 "551")이 이걸로 사라진다.
+  const blind = bench({ maxTurn: 70, read: { maxTurn: 0 } });
+  const known = bench({ maxTurn: 70 });
+  assert.ok(blind && known && blind.total === known.total);
+  assert.ok(blind.wrong > 0, '견줄 것이 없으면 이 시험은 아무것도 안 잰다');
+  assert.strictEqual(known.wrong, 0, `최대 턴을 알고도 틀렸다: ${known.misses.join(' | ')}`);
+  assert.ok(known.ok >= blind.ok, '아는 쪽이 더 못 읽으면 안 된다');
+});
+
+test('최대 턴을 알아도 자릿수 안쪽은 그대로 읽는다', { skip: !loadFixtures() }, () => {
+  // 상한을 걸었다고 애먼 값이 잘려 나가면 안 된다 — 68턴은 70턴 전투에서 정상이다
+  for (const value of [0, 8, 12, 44, 68]) {
+    const s = sample((x) => x.value === value && !x.invert && x.height === 44);
+    if (!s) continue;
+    const got = readTurn(s.gray, s.w, s.h, TEMPLATES, { maxTurn: 70 });
+    assert.ok(got && got.value === value, `${value}를 ${got && got.value}로 읽었다`);
+  }
+  // 상한을 넘는 값은 아예 안 나온다 (100턴짜리 표본을 70턴 전투에 넣어 본다)
+  const big = sample((x) => x.value === 100 && !x.invert && x.height === 44);
+  if (big) {
+    const got = readTurn(big.gray, big.w, big.h, TEMPLATES, { maxTurn: 70 });
+    assert.ok(!got || got.value <= 70, `상한 70을 넘겨 읽었다: ${got && got.value}`);
+  }
+});
+
 test('화면 확대가 정확도를 올린다', { skip: !loadFixtures() }, () => {
   // 인식 전에 크롭을 CROP_TARGET_HEIGHT 근처로 키운다. 그 값을 잘못 만지면
   // 조용히 나빠지므로, 키운 쪽이 더 나은지 자물쇠로 걸어 둔다.

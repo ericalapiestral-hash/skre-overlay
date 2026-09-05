@@ -11,17 +11,21 @@
 
 const { readTurn, loadTemplates } = require('../shared/turnReader');
 const { createFollower } = require('../shared/follower');
+const { createMaxTurnWatch } = require('../shared/maxTurn');
 const { flatten } = require('../shared/steps');
 
 /**
  * @typedef {{turn: number, label: string}} FlowStep
  * @typedef {{index: number, moved: boolean, turn: number|null, raw: number|null,
  *            confidence: number, hidden: boolean, hiddenMs: number,
- *            why: string}} FeedResult
+ *            why: string, max: number|null, dropped: number|null}} FeedResult
+ *   max     지금 믿고 있는 최대 턴 (`16 / 70` 의 70). 모르면 null
+ *   dropped 최대 턴과 안 맞아서 **버린** 값. 상태줄에 왜 멈췄는지 보여주려고 둔다
  */
 
 /**
- * @param {{templates?: any[], follower?: object, now?: () => number}} [options]
+ * @param {{templates?: any[], follower?: object, maxTurn?: object,
+ *          now?: () => number}} [options]
  *   now 시계 — 테스트에서 프레임 시각을 직접 넣으려고 바꿔 끼울 수 있다
  */
 function createEngine(options = {}) {
@@ -32,6 +36,8 @@ function createEngine(options = {}) {
   let flow = [];
   let follower = createFollower([], followerOptions);
   let active = templates;
+  // 최대 턴은 전투 내내 안 바뀐다 — 알아내면 지금 턴의 자릿수와 상한이 정해진다
+  const maxTurn = createMaxTurnWatch(options.maxTurn);
 
   /** 기본 대조표 + 사용자가 가르친 대조표 */
   function setTemplates(builtin, userJson) {
@@ -57,6 +63,8 @@ function createEngine(options = {}) {
     const index = keepIndex ? Math.max(0, Math.min(follower.index, steps.length - 1)) : 0;
     flow = steps;
     follower = createFollower(flow, { ...followerOptions, index: steps.length ? index : 0 });
+    // 빌드를 바꿨으면 다른 전투일 수 있다 — 최대 턴도 처음부터 다시 본다
+    maxTurn.reset();
     return { steps, index: follower.index };
   }
 
@@ -68,6 +76,7 @@ function createEngine(options = {}) {
   /** 자동을 껐다 켰을 때 — 위치는 두고 읽기 기억만 지운다 */
   function reset() {
     follower.reset();
+    maxTurn.reset();
   }
 
   /**
@@ -80,17 +89,26 @@ function createEngine(options = {}) {
   function feed(gray, w, h, now = clock()) {
     // 빌드 턴을 "후보"로 넘기지 않는다 — 턴 카운터는 1씩 올라가서 화면에 뜨는 값
     // 대부분이 빌드 턴이 아니고, 맞추려 들면 18을 28로 바꿔 놓는다 (turnReader의 bestValue).
-    const got = readTurn(gray, w, h, active);
-    const r = follower.push(got, now);
+    //
+    // 대신 넘기는 건 **최대 턴**이다. 그건 화면이 스스로 말해 주는 값이라
+    // 빌드와 무관하고, 지금 턴의 자릿수와 상한을 정해 준다 (shared/maxTurn.js).
+    const got = readTurn(gray, w, h, active, { maxTurn: maxTurn.known });
+    const verdict = maxTurn.see(got);
+    // 최대 턴이 안 맞는 프레임은 슬래시를 엉뚱한 데서 잘랐다는 뜻이라 왼쪽도 못 믿는다.
+    // 추적기에는 "가려짐"으로 들어간다 — 못 읽은 것과 똑같이 그 자리에 머문다.
+    const trusted = verdict.trust ? got : null;
+    const r = follower.push(trusted, now);
     return {
       index: r.index,
       moved: r.moved,
       turn: r.turn,
-      raw: got ? got.value : null,
-      confidence: got ? got.confidence : 0,
+      raw: trusted ? trusted.value : null,
+      confidence: trusted ? trusted.confidence : 0,
       hidden: r.hidden,
       hiddenMs: r.hiddenMs,
       why: r.why,
+      max: maxTurn.known,
+      dropped: !verdict.trust && got ? got.value : null,
     };
   }
 
@@ -108,6 +126,10 @@ function createEngine(options = {}) {
     },
     get templateCount() {
       return active.length;
+    },
+    /** 지금 믿는 최대 턴 — 진단·시험용 */
+    get maxTurn() {
+      return maxTurn.known;
     },
   };
 }

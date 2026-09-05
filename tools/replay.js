@@ -50,6 +50,8 @@ function replay(rec, { from = 0, to = Infinity } = {}) {
 function show(f) {
   if (typeof f.set === 'number') return `손→${f.set}`;
   if (f.why === 'note') return `※${f.note}`;
+  // 최대 턴과 안 맞아 버린 프레임 — 못 읽은 것과 갈라서 보여준다
+  if (f.drop !== undefined) return `✕${String(f.drop).padStart(2)}`;
   if (f.v === null || f.v === undefined) return '  —';
   return `${String(f.v).padStart(3)}${f.c !== undefined && f.c < 0.86 ? 'w' : ''}`;
 }

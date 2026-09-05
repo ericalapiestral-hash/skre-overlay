@@ -948,14 +948,27 @@ function expandBox(box, w, templates, maxDigits, params = MATCH) {
  * 예전엔 오른쪽을 그냥 버렸다.
  *
  * @param {Uint8Array} gray 회색조 픽셀 (길이 w*h)
- * @param {{minScore?:number, minMargin?:number, maxDigits?:number,
+ * @param {{minScore?:number, minMargin?:number, maxDigits?:number, maxTurn?:number|null,
  *          match?:object, thresholdOffsets?:number[]}} [opts]
+ *   maxTurn 최대 턴을 이미 안다면 — 지금 턴의 자릿수와 상한이 정해진다
  * @returns {Reading|null}
  */
 function readTurn(gray, w, h, templates, opts = {}) {
   if (!gray || w <= 0 || h <= 0 || !templates || templates.length === 0) return null;
   const maxDigits = opts.maxDigits ?? 3;
   const params = opts.match || MATCH;
+
+  // ★ 최대 턴을 알면(엔진이 프레임마다 지켜본다) **지금 턴의 자릿수가 정해진다.**
+  //
+  // 이게 자릿수 제한(maxDigits)보다 훨씬 센 단서다. "70턴 중"이라면 지금 턴은 두 자리를
+  // 넘을 수 없으므로, 세 덩어리로 갈린 명암은 아예 물린다. 44px "8"이 구멍 둘까지
+  // 세 덩어리로 잡혀 "551"로 읽히던 마지막 오독 2장이 이걸로 사라진다.
+  //
+  // 자릿수를 처음부터 2로 낮추는 것과는 다르다. maxDigits 는 줄 고르기·덩어리 판정까지
+  // 같이 좁혀서 "12/70"의 오른쪽을 통째로 놓친다 (재 봤다: 최대 턴 맞음 1002 → 646).
+  // 여기서는 **왼쪽 결과에만** 건다.
+  const maxTurn = opts.maxTurn && opts.maxTurn > 0 ? opts.maxTurn : null;
+  const leftDigits = maxTurn ? String(maxTurn).length : maxDigits;
 
   // 문턱값은 밝기 분포에서 나오는 값이라 명암 방향과 무관하다 — 한 번만 구해 나눠 쓴다
   const base = otsuThreshold(gray);
@@ -999,10 +1012,12 @@ function readTurn(gray, w, h, templates, opts = {}) {
       // 두 글자가 붙은 채로 남은 덩어리가 왼쪽에 있으면 읽지 않는다 — 억지로 고르면
       // 자신 있게 틀린다 (자릿수를 넘겼는데 붙은 덩어리까지 있는 경우)
       const stuck = boxes.slice(0, leftEnd).some((b) => b.w / b.h > MERGED_RATIO);
-      if (left.length === 0 || left.length > maxDigits || (stuck && left.length > 1)) continue;
+      if (left.length === 0 || left.length > leftDigits || (stuck && left.length > 1)) continue;
 
       const cur = bestValue(left, opts);
       if (!cur) continue;
+      // 최대 턴을 알면 그보다 큰 턴은 있을 수 없다 — 그 명암은 통째로 물린다
+      if (maxTurn !== null && cur.value > maxTurn) continue;
 
       // 오른쪽(최대 턴)은 못 읽어도 괜찮다 — 있으면 검증에 쓰고, 없으면 그만이다
       const top = right.length > 0 && right.length <= maxDigits ? bestValue(right, opts) : null;

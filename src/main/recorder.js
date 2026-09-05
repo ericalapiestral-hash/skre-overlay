@@ -36,8 +36,10 @@ const SAMPLE_CAPS = {
 const MAX_SAMPLE_BYTES = 6 * 1024 * 1024;
 
 /**
- * @typedef {{t: number, v: number|null, c?: number,
+ * @typedef {{t: number, v: number|null, c?: number, drop?: number,
  *            i: number, why: string, set?: number, note?: string}} Frame
+ *   drop 최대 턴과 안 맞아 **버린** 값. v 는 null 이지만(추적기가 본 그대로)
+ *        되돌려 볼 때는 "못 읽은 것"과 "버린 것"을 갈라 봐야 한다
  * @typedef {{t: number, w: number, h: number, gray: string, kind: string,
  *            read: number|null, conf: number}} Sample
  */
@@ -87,7 +89,7 @@ function createRecorder(options = {}) {
    * 프레임 하나. gray를 같이 주면 표본으로 담길 수도 있다.
    *
    * @param {{raw: number|null, confidence: number, index: number, why: string,
-   *          }} r 엔진이 돌려준 결과
+   *          dropped?: number|null}} r 엔진이 돌려준 결과
    * @param {{gray?: Uint8Array, w?: number, h?: number, strongScore?: number,
    *          now?: number}} [frameData]
    */
@@ -96,6 +98,8 @@ function createRecorder(options = {}) {
     /** @type {Frame} */
     const f = { t, v: r.raw, i: r.index, why: r.why };
     if (r.raw !== null) f.c = Math.round(r.confidence * 1000) / 1000;
+    // 최대 턴과 안 맞아 버린 프레임은 그렇다고 적어 둔다 — 못 읽은 것과 원인이 다르다
+    if (r.dropped !== null && r.dropped !== undefined) f.drop = r.dropped;
     pushFrame(f);
 
     const { gray, w, h, strongScore = 0.86 } = frameData;

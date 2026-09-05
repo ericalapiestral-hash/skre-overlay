@@ -96,10 +96,13 @@ function byDigit() {
 /**
  * 성능을 잰다.
  *
- * @param {{holdout?: boolean, read?: object, target?: number,
+ * @param {{holdout?: boolean, read?: object, target?: number, maxTurn?: number,
  *          fonts?: string[], heights?: number[], verbose?: boolean}} [opts]
  *   holdout 표본을 그린 폰트의 대조표를 빼고 맞춘다 (기본 true = 처음 보는 폰트 조건)
  *   target  앱처럼 이 높이 근처로 키워서 읽는다 (0이면 원본 크기 그대로)
+ *   maxTurn 최대 턴을 이미 아는 조건에서 잰다 — 그보다 큰 표본은 빼고,
+ *           readTurn 에도 같이 넘긴다. `read: { maxTurn: 0 }` 으로 같은 표본에서
+ *           모르는 조건과 견줄 수 있다
  * @returns {{total:number, ok:number, unknown:number, wrong:number, misses:string[],
  *            ms:number, msMax:number}|null} ms는 한 장 읽는 데 걸린 시간의 중앙값
  */
@@ -112,8 +115,10 @@ function bench(opts = {}) {
   const samples = data.samples.filter(
     (s) =>
       (!opts.heights || opts.heights.includes(s.height)) &&
-      (!opts.fonts || opts.fonts.includes(s.font)),
+      (!opts.fonts || opts.fonts.includes(s.font)) &&
+      (!opts.maxTurn || s.value <= opts.maxTurn),
   );
+  const read = { maxTurn: opts.maxTurn || null, ...(opts.read || {}) };
 
   // 폰트마다 대조표를 한 번만 만든다 (표본마다 만들면 몇 분씩 걸린다)
   const byFont = new Map();
@@ -144,7 +149,7 @@ function bench(opts = {}) {
       target ? Math.max(1, Math.min(8, target / s0.height)) : 1,
     );
     for (let i = 0; i < 20; i += 1) {
-      readTurn(warm.gray, warm.w, warm.h, templatesFor(s0.font), opts.read || {});
+      readTurn(warm.gray, warm.w, warm.h, templatesFor(s0.font), read);
     }
   }
 
@@ -152,7 +157,7 @@ function bench(opts = {}) {
     const raw = new Uint8Array(Buffer.from(s.gray, 'base64'));
     const img = target ? upscale(raw, s.w, s.h, Math.max(1, Math.min(8, target / s.height))) : { gray: raw, w: s.w, h: s.h };
     const started = process.hrtime.bigint();
-    const got = readTurn(img.gray, img.w, img.h, templatesFor(s.font), opts.read || {});
+    const got = readTurn(img.gray, img.w, img.h, templatesFor(s.font), read);
     times.push(Number(process.hrtime.bigint() - started) / 1e6);
     const where = `${s.font} ${s.height}px${s.invert ? ' 반전' : ''}`;
     if (!got) {
@@ -206,6 +211,13 @@ if (require.main === module) {
     showMisses: verbose,
   });
   console.log();
+  // 앱은 화면에서 최대 턴("16 / 70"의 70)을 스스로 알아낸다. 알고 나면 지금 턴의
+  // 자릿수가 정해져서 세 덩어리로 갈린 오독이 아예 물린다 — 여기가 그 차이다.
+  report('최대 턴을 아는 조건 (70턴 전투)', bench({ maxTurn: 70, verbose }), {
+    showMisses: verbose,
+  });
   console.log();
+  console.log();
+  report('참고 — 최대 턴을 모를 때 (같은 표본)', bench({ maxTurn: 70, read: { maxTurn: 0 } }));
   report('참고 — 화면 확대 없이 (원본 크기 그대로)', bench({ target: 0 }));
 }

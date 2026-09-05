@@ -506,7 +506,9 @@ async function tick() {
     const r = await api.engine.feed(frame.gray, frame.w, frame.h);
     if (!state.auto || gen !== generation) return; // 기다리는 동안 상태가 바뀌었다
 
-    if (r.turn !== null) $('turn').textContent = `${r.turn}턴`;
+    // 최대 턴을 알아냈으면 화면에도 "16 / 70"으로 보여준다 — 인식이 슬래시를
+    // 제대로 갈랐는지 사람이 한눈에 확인할 수 있는 자리다
+    if (r.turn !== null) $('turn').textContent = r.max ? `${r.turn} / ${r.max}` : `${r.turn}턴`;
     if (r.index !== state.index) {
       state.index = r.index;
       highlightStep();
@@ -521,6 +523,12 @@ async function tick() {
 
 /** 인식 상태를 사람 말로 — 안 될 때 뭘 해야 하는지, 왜 안 움직이는지까지 알려준다 */
 function reportStatus(r) {
+  // 최대 턴과 안 맞아 버린 프레임 — "왜 안 넘어가지?"의 답이 되는 자리다.
+  // 슬래시를 엉뚱한 데서 잘랐다는 뜻이라 그 프레임은 통째로 안 믿는다.
+  if (r.dropped !== null && r.dropped !== undefined) {
+    setStatus(`숫자가 최대 턴(${r.max})과 안 맞아 건너뜀 (${r.dropped}) — 잠시 뒤 다시 읽어요`, '');
+    return;
+  }
   if (r.turn === null) {
     if (r.hidden && r.hiddenMs >= 3000) {
       setStatus('숫자를 못 읽고 있어요 — [턴 영역]을 숫자에 딱 맞게 다시 잡거나 [가르치기]를 눌러보세요.', 'err');
