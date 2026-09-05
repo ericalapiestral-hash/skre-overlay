@@ -123,3 +123,41 @@ test('맨 앞이 슬래시로 보여도 통째로 버리지 않는다', { skip }
   const r = read(one);
   assert.ok(r && r.value === 1, `"${one.text}"를 ${r ? r.value : 'null'}로 읽었다`);
 });
+
+test('최대 턴(슬래시 오른쪽)도 같이 읽는다', { skip }, () => {
+  // 오른쪽 숫자는 **전투 내내 안 바뀐다.** 그래서 엔진이 이걸 검증에 쓴다
+  // (engine.js의 knownMax): 프레임마다 다른 최대 턴이 나오면 나눈 자리가 수상하다는
+  // 뜻이고, 지금 턴이 최대 턴보다 크면 있을 수 없는 값이다.
+  //
+  // 그러니 여기서 중요한 건 "얼마나 자주 읽히나"가 아니라 **틀리게 읽는 비율**이다.
+  // 못 읽는 건(null) 안전하다 — 엔진이 그 프레임을 검증에 안 쓴다.
+  let ok = 0;
+  const wrong = [];
+  let none = 0;
+  for (const s of pairs) {
+    const truth = Number(String(s.text).split('/')[1]);
+    const r = read(s);
+    if (!r || r.max === null) {
+      none += 1;
+      continue;
+    }
+    if (r.max === truth) ok += 1;
+    else wrong.push(`  "${s.text}" (${s.font} ${s.height}px) → 최대 ${r.max} (${r.maxConfidence.toFixed(2)})`);
+  }
+  assert.ok(ok > pairs.length * 0.95, `최대 턴을 읽은 것이 ${ok}/${pairs.length}장뿐이다`);
+  assert.ok(
+    wrong.length <= pairs.length * 0.005,
+    `최대 턴을 ${wrong.length}장 틀리게 읽었다:\n${wrong.slice(0, 10).join('\n')}`,
+  );
+  // 틀린 것들은 흐리게 읽힌다 — 엔진이 **또렷한 것만** 믿고 채택하는 근거다
+  assert.ok(none < pairs.length * 0.05, `최대 턴을 못 읽은 것이 ${none}장`);
+});
+
+test('슬래시가 없으면 최대 턴도 없다', { skip }, () => {
+  // 사용자가 영역을 숫자에만 딱 맞춰 잡았을 때 — 엔진의 최대 턴 검증이 통째로 꺼져야 한다
+  const digitsOnly = data.samples.filter((s) => s.height === 32 && !s.invert).slice(0, 40);
+  for (const s of digitsOnly) {
+    const r = read(s);
+    assert.ok(r && r.max === null, `숫자만 있는 표본에서 최대 턴이 나왔다: ${r && r.max}`);
+  }
+});
