@@ -46,7 +46,7 @@
       ]
     },
     "portable": {
-      "artifactName": "skre-overlay-${version}-test.1.exe"
+      "artifactName": "skre-overlay-${version}.exe"
     }
   }
 }

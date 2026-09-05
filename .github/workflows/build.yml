@@ -77,6 +77,18 @@ jobs:
         with:
           name: skre-overlay-windows
           path: dist
+      # 파일 이름이 태그를 따라가게 한다. package.json 의 version 은 NSIS 때문에 숫자만
+      # 쓰므로(0.9.0), 그대로 두면 test.1 과 test.2 의 파일 이름이 똑같아진다 —
+      # 실제로 test.2 릴리스에 "…-test.1.exe" 가 올라갔다.
+      - name: 파일 이름을 태그에 맞춘다
+        env:
+          TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
+        run: |
+          set -e
+          src=$(ls dist/*.exe | head -1)
+          mv "$src" "dist/skre-overlay-${TAG#v}.exe"
+          ls -la dist/
+
       - name: 릴리스 올리기
         env:
           GH_TOKEN: ${{ github.token }}
