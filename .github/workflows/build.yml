@@ -52,6 +52,8 @@ jobs:
   build-windows:
     needs: test
     runs-on: windows-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -59,46 +61,24 @@ jobs:
           node-version: 22
       - run: npm ci
       - run: npx electron-builder --win --publish never
-      - uses: actions/upload-artifact@v4
-        with:
-          name: skre-overlay-windows
-          path: dist/*.exe
-          if-no-files-found: error
-          retention-days: 30
 
-  release:
-    needs: build-windows
-    if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
-    runs-on: ubuntu-latest
-    permissions:
-      contents: write
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          name: skre-overlay-windows
-          path: dist
-      # 파일 이름이 태그를 따라가게 한다. package.json 의 version 은 NSIS 때문에 숫자만
-      # 쓰므로(0.9.0), 그대로 두면 test.1 과 test.2 의 파일 이름이 똑같아진다 —
+      # ★ **릴리스를 지은 그 자리에서 바로 올린다.**
+      #
+      # 예전엔 exe를 artifact로 올렸다가 따로 릴리스 잡에서 내려받아 붙였다. 그런데
+      # exe가 74MB인데 보관이 30일이라 몇 판 돌리자 **아티팩트 저장 용량이 꽉 차서
+      # 빌드가 실패했다** ("Artifact storage quota has been hit"). exe는 멀쩡히
+      # 지어졌는데 옮기다가 막힌 것이다. 같은 잡에서 올리면 그 왕복 자체가 없어진다.
+      #
+      # 파일 이름은 태그를 따라가게 한다. package.json 의 version 은 NSIS 때문에
+      # 숫자만 쓰므로(0.9.0), 그대로 두면 test.1 과 test.2 의 이름이 똑같아진다 —
       # 실제로 test.2 릴리스에 "…-test.1.exe" 가 올라갔다.
-      - name: 파일 이름을 태그에 맞춘다
-        env:
-          TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag }}
-        run: |
-          set -e
-          src=$(ls dist/*.exe | head -1)
-          mv "$src" "dist/skre-overlay-${TAG#v}.exe"
-          ls -la dist/
-
-      # 릴리스 글은 저장소 안의 파일이다 (.github/release-notes.md) —
-      # 워크플로에 박아 두면 판마다 고치는 걸 잊고 옛 수치가 그대로 올라간다.
-      # 실제로 test.3 에 test.2 때 쓴 글이 올라갔다.
-      - uses: actions/checkout@v4
-        with:
-          sparse-checkout: .github/release-notes.md
-          sparse-checkout-cone-mode: false
-          path: repo
-
+      #
+      # 릴리스 글은 저장소 안의 파일이다 (.github/release-notes.md). 워크플로에
+      # 박아 두면 판마다 고치는 걸 잊고 옛 수치가 그대로 올라간다 — 실제로 test.3 에
+      # test.2 때 쓴 글이 올라갔다. 여기서는 체크아웃한 것을 그대로 쓴다.
       - name: 릴리스 올리기
+        if: startsWith(github.ref, 'refs/tags/') || inputs.tag != ''
+        shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
           REPO: ${{ github.repository }}
@@ -108,8 +88,11 @@ jobs:
           TARGET: ${{ github.sha }}
         run: |
           set -e
+          src=$(ls dist/*.exe | head -1)
+          out="dist/skre-overlay-${TAG#v}.exe"
+          [ "$src" = "$out" ] || mv "$src" "$out"
           ls -la dist/
-          notes=repo/.github/release-notes.md
+          notes=.github/release-notes.md
           # 같은 태그로 다시 돌리면 새로 만드는 대신 글과 파일을 갈아 끼운다 —
           # 릴리스 글만 고치려고 태그를 하나 더 파는 건 낭비다
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
@@ -117,9 +100,9 @@ jobs:
               --title "SKRE 오버레이 $TAG — 시험판" \
               --notes-file "$notes" \
               --prerelease
-            gh release upload "$TAG" dist/*.exe --repo "$REPO" --clobber
+            gh release upload "$TAG" "$out" --repo "$REPO" --clobber
           else
-            gh release create "$TAG" dist/*.exe \
+            gh release create "$TAG" "$out" \
               --repo "$REPO" \
               --target "$TARGET" \
               --title "SKRE 오버레이 $TAG — 시험판" \
@@ -127,3 +110,15 @@ jobs:
               --prerelease
           fi
           gh release view "$TAG" --repo "$REPO" --json url --jq .url
+
+      # 릴리스로 안 올리는 판(그냥 빌드만)만 artifact 로 남긴다. 보관을 짧게 두는
+      # 이유는 위와 같다 — 74MB 짜리가 쌓이면 저장 용량이 차서 **빌드 자체가 실패한다.**
+      # 용량이 찼을 때 릴리스까지 같이 죽지 않도록 continue-on-error 를 둔다.
+      - uses: actions/upload-artifact@v4
+        if: startsWith(github.ref, 'refs/tags/') == false && inputs.tag == ''
+        continue-on-error: true
+        with:
+          name: skre-overlay-windows
+          path: dist/*.exe
+          if-no-files-found: error
+          retention-days: 3
