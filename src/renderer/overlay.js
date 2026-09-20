@@ -789,7 +789,10 @@ async function syncNotion() {
       notionMsg(r.error, 'err');
       return;
     }
-    notionMsg(`빌드 ${r.builds}개를 받았어요 (페이지 ${r.pages}개).`, 'ok');
+    // 어느 방법으로 긁혔는지도 같이 보여준다 — 'notion'이 아니면 선택자가 밀렸다는
+    // 뜻이라, 그걸 알아야 [페이지 저장]으로 고칠 수 있다 (main/notion.js 참고)
+    const how = r.how ? Object.entries(r.how).map(([k, n]) => `${k} ${n}`).join(' · ') : '';
+    notionMsg(`빌드 ${r.builds}개를 받았어요 (페이지 ${r.pages}개${how ? ` · 긁은 방법 ${how}` : ''}).`, 'ok');
     await loadCatalog({ first: true });
   } catch (e) {
     notionMsg(`노션에서 못 받았어요: ${e.message}`, 'err');
@@ -808,7 +811,33 @@ api.catalog.onSyncProgress(({ done, title }) => {
   notionMsg(`읽는 중 ${done}쪽째 — ${title || ''}`, '');
 });
 
+/**
+ * 안 긁힐 때 쓰는 길 — 노션 화면을 떠서 바탕화면에 저장한다.
+ *
+ * 개발하는 곳에서는 노션에 접속을 못 해서, 선택자가 밀렸을 때 고칠 자료가 이 파일
+ * 말고는 없다. [전투 기록 저장]과 같은 이유로 **바탕화면에** 둔다 — 사람이 찾아서
+ * 보내 줄 수 있어야 쓸모가 있다.
+ */
+async function dumpNotion() {
+  const button = /** @type {HTMLButtonElement} */ ($('btn-notion-dump'));
+  const url = /** @type {HTMLInputElement} */ ($('notion-url')).value.trim();
+  button.disabled = true;
+  notionMsg('노션 화면을 뜨는 중…', '');
+  try {
+    const r = await api.catalog.dumpNotion(url);
+    notionMsg(
+      r.ok ? `저장했어요 — 이 파일을 개발자에게 주세요: ${r.file}` : r.error,
+      r.ok ? 'ok' : 'err',
+    );
+  } catch (e) {
+    notionMsg(`못 떴어요: ${e.message}`, 'err');
+  } finally {
+    button.disabled = false;
+  }
+}
+
 $('btn-notion').addEventListener('click', syncNotion);
+$('btn-notion-dump').addEventListener('click', dumpNotion);
 $('notion-url').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') syncNotion();
 });

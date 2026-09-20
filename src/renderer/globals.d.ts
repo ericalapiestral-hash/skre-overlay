@@ -14,8 +14,10 @@ interface OverlayApi {
       error?: string;
       pages?: number;
       builds?: number;
+      how?: Record<string, number>;
     }>;
     onSyncProgress(fn: (p: { done: number; title: string }) => void): () => void;
+    dumpNotion(url: string): Promise<{ ok: boolean; error?: string; file?: string }>;
   };
   config: {
     get(): Promise<any>;

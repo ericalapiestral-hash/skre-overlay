@@ -26,6 +26,7 @@ contextBridge.exposeInMainWorld('overlay', {
     pickFile: () => ipcRenderer.invoke('catalog:pick-file'),
     reveal: () => ipcRenderer.invoke('catalog:reveal'),
     syncNotion: (url) => ipcRenderer.invoke('catalog:sync-notion', url),
+    dumpNotion: (url) => ipcRenderer.invoke('catalog:dump-notion', url),
     onSyncProgress: (fn) => on('catalog:sync-progress', fn),
     onUpdated: (fn) => on('catalog:updated', fn),
   },

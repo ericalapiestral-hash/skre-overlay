@@ -9,6 +9,8 @@
 // steps.js도 화면도 손댈 것이 없다 — 도감을 어디서 가져오든 그 뒤는 똑같이 흐른다.
 'use strict';
 
+const { parseBuild } = require('./steps');
+
 /**
  * @typedef {{title: string, url?: string, markdown?: string,
  *            children?: NotionPage[]}} NotionPage
@@ -144,4 +146,57 @@ function toCatalog(root, options = {}) {
   return { title: (root && root.title) || '도감', syncedAt, builds };
 }
 
-module.exports = { toCatalog, weekdaysOf, looksLikeBuild, buildId, pageIdOf, SEP, CATEGORIES };
+/**
+ * 한 페이지를 여러 방법으로 긁었을 때, **어느 것을 쓸지 재서 고른다.**
+ *
+ * ★ 이게 이 기능의 핵심이다. 노션이 화면을 어떻게 그리는지는 개발하는 곳에서
+ * 확인할 방법이 없다 — notion.site 가 막혀 있다. 그래서 "내가 맞는 선택자를 알고
+ * 있다"에 기대면 안 된다. 대신 **여러 방법으로 긁어 보고, 도감 파서에 실제로
+ * 넣어 봐서 제일 잘 읽히는 것을 쓴다.** 한 방법이 깨져도 나머지가 받는다.
+ *
+ * 고르는 순서 (앞엣것이 먼저):
+ *  1. **단계를 읽어낸 것** — 하나도 못 읽는 건 쓸모가 없다.
+ *  2. **`스킬 순서` 섹션을 찾은 것**(strategy 'section') — 제목 구조가 살아 있다는 뜻이다.
+ *  3. **라운드를 더 많이 나눈 것** — 맨글씨로 긁으면 라운드가 한 덩어리로 뭉친다
+ *     (재 봤다: 마크다운은 2라운드로 갈리는데 맨글씨는 1덩어리가 된다).
+ *  4. 단계가 더 많은 것.
+ *  5. **짧은 것** — 같은 것을 읽어냈다면 군더더기가 적은 쪽이다.
+ *
+ * 단계를 아무도 못 읽었으면 **제일 긴 것**을 준다. 본문은 그대로 보여줘야 하기
+ * 때문이다 — 순서를 못 읽었다고 빌드를 숨기지 않는다 (CLAUDE.md).
+ *
+ * @param {Array<{how: string, markdown: string}>} candidates
+ * @returns {{how: string, markdown: string, stepCount: number, strategy: string, groups: number}}
+ */
+function pickBody(candidates) {
+  const list = (candidates || []).filter((c) => c && typeof c.markdown === 'string');
+  if (list.length === 0) return { how: 'none', markdown: '', stepCount: 0, strategy: 'none', groups: 0 };
+
+  const scored = list.map((c) => {
+    const parsed = parseBuild(c.markdown);
+    return {
+      how: c.how,
+      markdown: c.markdown,
+      stepCount: parsed.stepCount,
+      strategy: parsed.strategy,
+      groups: (parsed.groups || []).length,
+    };
+  });
+
+  const withSteps = scored.filter((c) => c.stepCount > 0);
+  if (withSteps.length === 0) {
+    // 아무것도 못 읽었으면 본문이라도 제일 많이 건진 것
+    return scored.reduce((a, b) => (b.markdown.length > a.markdown.length ? b : a));
+  }
+  return withSteps.sort((a, b) => {
+    const section = (c) => (c.strategy === 'section' ? 1 : 0);
+    return (
+      section(b) - section(a) ||
+      b.groups - a.groups ||
+      b.stepCount - a.stepCount ||
+      a.markdown.length - b.markdown.length
+    );
+  })[0];
+}
+
+module.exports = { toCatalog, pickBody, weekdaysOf, looksLikeBuild, buildId, pageIdOf, SEP, CATEGORIES };

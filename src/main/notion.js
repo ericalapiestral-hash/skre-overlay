@@ -18,6 +18,7 @@
 'use strict';
 
 const { BrowserWindow } = require('electron');
+const { pickBody } = require('../shared/notionDoc');
 
 /** 한 페이지가 다 그려지기를 기다리는 한도 (ms) */
 const RENDER_TIMEOUT = 20000;
@@ -34,81 +35,179 @@ const MAX_PAGES = 400;
  * **노션이 "Markdown으로 내보내기"로 뽑아 주는 글과 비슷하게** 만든다 — 그래야
  * 기존 파서(steps.js)가 그대로 읽고, 사람이 내보낸 파일과 견줘 볼 수 있다.
  */
-const EXTRACT = `(() => {
+/**
+ * 긁기 **전에** 페이지를 준비한다. 여기가 없으면 글의 상당 부분을 통째로 놓친다.
+ *
+ *  · **접힌 토글을 편다.** 빌드를 토글 안에 넣어 두면 접힌 동안은 DOM에 아예 없다.
+ *  · **끝까지 훑어 내린다.** 노션은 긴 페이지를 **보이는 만큼만 그린다.** 창을 길게
+ *    잡는 것만으로는 부족해서, 바닥까지 내려 높이가 안 늘 때까지 기다려야 한다.
+ *
+ * 둘 다 "안 하면 조용히 절반만 긁히는" 종류라 실패해도 티가 안 난다 — 그래서
+ * 몇 번 폈고 얼마나 늘었는지 숫자로 돌려준다.
+ */
+const PREPARE = `(async () => {
+  const rest = (ms) => new Promise((r) => setTimeout(r, ms));
+  let opened = 0;
+  for (let round = 0; round < 4; round += 1) {
+    const closed = Array.from(document.querySelectorAll('[aria-expanded="false"]'));
+    if (closed.length === 0) break;
+    for (const el of closed.slice(0, 300)) {
+      try { el.click(); opened += 1; } catch (e) { /* 못 눌러도 계속 */ }
+    }
+    await rest(250);
+  }
+
+  const scroller =
+    document.querySelector('.notion-frame .notion-scroller') ||
+    document.querySelector('.notion-scroller') ||
+    document.scrollingElement ||
+    document.body;
+  let last = -1;
+  for (let i = 0; i < 40; i += 1) {
+    try { scroller.scrollTop = scroller.scrollHeight; } catch (e) { /* 무시 */ }
+    window.scrollTo(0, document.body.scrollHeight);
+    await rest(200);
+    const h = Math.max(scroller.scrollHeight || 0, document.body.scrollHeight || 0);
+    if (h === last) break;
+    last = h;
+  }
+  try { scroller.scrollTop = 0; } catch (e) { /* 무시 */ }
+  window.scrollTo(0, 0);
+  await rest(150);
+  return {
+    opened,
+    height: last,
+    blocks: document.querySelectorAll('[class*="notion-"][class*="-block"]').length,
+  };
+})()`;
+
+/**
+ * 하위 페이지 링크는 **긁는 방법과 상관없이 한 번만** 모은다.
+ * 링크는 글이 아니라 "저기도 가 봐라"는 표시라, 어느 방법을 쓰든 같아야 한다.
+ */
+const LINKS = `(() => {
+  const out = [];
+  const seen = new Set();
+  for (const a of document.querySelectorAll('a[href]')) {
+    const href = a.getAttribute('href') || '';
+    const title = (a.textContent || '').replace(/\\u00a0/g, ' ').trim();
+    if (!href || seen.has(href)) continue;
+    seen.add(href);
+    out.push({ href, title });
+  }
+  return out;
+})()`;
+
+/** 세 방법이 같이 쓰는 도우미 — 이 덩어리 자신의 글만 (안에 든 덩어리는 뺀다) */
+const OWN_TEXT = `
+  const clean = (t) => (t || '').replace(/\\u00a0/g, ' ').replace(/[ \\t]+/g, ' ').trim();
+  const ownText = (el, sel) => {
+    const copy = el.cloneNode(true);
+    copy.querySelectorAll(sel).forEach((n) => n.remove());
+    return clean(copy.textContent);
+  };
+`;
+
+/**
+ * 방법 1 — **노션 블록 클래스로.** 제일 좋은 결과가 나오지만, `notion-…-block` 이라는
+ * 내부 클래스 이름에 기댄다. 노션이 바꾸면 이 방법만 깨지고 아래 둘이 받는다.
+ */
+const EXTRACT_NOTION = `(() => {
+  ${OWN_TEXT}
   const PREFIX = {
     header: '# ', sub_header: '## ', sub_sub_header: '### ',
     bulleted_list: '- ', numbered_list: '1. ', to_do: '- ',
     toggle: '- ', quote: '> ', callout: '> ',
   };
-  const root =
-    document.querySelector('.notion-page-content') ||
-    document.querySelector('main') ||
-    document.body;
-
-  /** 이 블록 자신의 글만 (안에 든 다른 블록의 글은 뺀다) */
-  const ownText = (el) => {
-    const copy = el.cloneNode(true);
-    copy.querySelectorAll('[class*="-block"]').forEach((n) => n.remove());
-    return (copy.textContent || '').replace(/\\u00a0/g, ' ').trim();
-  };
+  const root = document.querySelector('.notion-page-content') || document.querySelector('main') || document.body;
   const kindOf = (el) => {
     const m = String(el.className || '').match(/notion-([a-z_]+)-block/);
     return m ? m[1] : '';
   };
-
   const lines = [];
-  const links = [];
-  const seenHref = new Set();
-
   const walk = (el, depth) => {
     for (const child of el.children) {
       const kind = kindOf(child);
-      if (!kind) {
-        walk(child, depth);
-        continue;
-      }
-      if (kind === 'page' || kind === 'collection_view' || kind === 'link_to_page') {
-        // 하위 페이지 — 글이 아니라 "저기도 가 봐라"는 표시다
-        for (const a of child.querySelectorAll('a[href]')) {
-          const href = a.getAttribute('href') || '';
-          const title = (a.textContent || '').trim();
-          if (!href || seenHref.has(href) || !title) continue;
-          seenHref.add(href);
-          links.push({ href, title });
-        }
-        walk(child, depth);
-        continue;
-      }
-      const text = ownText(child);
+      if (!kind) { walk(child, depth); continue; }
+      if (kind === 'page' || kind === 'link_to_page') { walk(child, depth); continue; }
+      if (kind === 'table' || kind === 'table_row') { walk(child, depth); continue; }
+      const text = ownText(child, '[class*="-block"]');
       if (text) {
         const pad = '  '.repeat(Math.min(depth, 6));
-        if (kind === 'code') lines.push('\`\`\`', text, '\`\`\`');
-        else if (kind === 'table' || kind === 'table_row') lines.push(pad + text);
+        if (kind === 'code') lines.push('\\\`\\\`\\\`', text, '\\\`\\\`\\\`');
         else lines.push(pad + (PREFIX[kind] || '') + text);
       }
-      walk(child, PREFIX[kind] && PREFIX[kind].trim().endsWith('.') ? depth + 1 : depth + (kind.endsWith('_list') || kind === 'toggle' ? 1 : 0));
+      walk(child, depth + (kind.endsWith('_list') || kind === 'toggle' ? 1 : 0));
     }
   };
   walk(root, 0);
-
-  // 표는 위 walk 로는 줄이 흩어진다 — 행 단위로 다시 모은다
-  for (const table of document.querySelectorAll('.notion-table-block, .notion-collection_view-block table')) {
-    for (const row of table.querySelectorAll('tr, [role="row"]')) {
-      const cells = [...row.querySelectorAll('td, th, [role="cell"], [role="columnheader"]')]
-        .map((c) => (c.textContent || '').trim())
-        .filter(Boolean);
-      if (cells.length > 1) lines.push(cells.join(' | '));
-    }
+  for (const row of document.querySelectorAll('.notion-table-block tr, .notion-collection_view-block tr')) {
+    const cells = Array.from(row.querySelectorAll('td, th')).map((c) => clean(c.textContent)).filter(Boolean);
+    if (cells.length > 1) lines.push(cells.join(' | '));
   }
+  return lines.join('\\n');
+})()`;
 
-  const titleEl =
+/**
+ * 방법 2 — **평범한 HTML 태그로.** h1·li·tr 같은 표준 태그만 본다. 노션이 클래스
+ * 이름을 통째로 바꿔도 이건 산다. 같은 글이 겹쳐 나오면 제목 구조가 살아 있어도
+ * 단계가 부풀어 잘못 뽑히므로, **똑같은 줄은 한 번만** 넣는다.
+ */
+const EXTRACT_SEMANTIC = `(() => {
+  ${OWN_TEXT}
+  const TAG = {
+    H1: '# ', H2: '## ', H3: '### ', H4: '### ', H5: '### ', H6: '### ',
+    LI: '- ', BLOCKQUOTE: '> ', P: '', PRE: '',
+  };
+  const BLOCKS = 'h1,h2,h3,h4,h5,h6,li,p,blockquote,pre,tr';
+  const root = document.querySelector('main') || document.body;
+  const lines = [];
+  const seen = new Set();
+  const push = (line) => {
+    const key = line.trim();
+    if (!key || seen.has(key)) return;
+    seen.add(key);
+    lines.push(line);
+  };
+  for (const el of root.querySelectorAll(BLOCKS)) {
+    if (el.tagName === 'TR') {
+      const cells = Array.from(el.querySelectorAll('td, th')).map((c) => clean(c.textContent)).filter(Boolean);
+      if (cells.length > 1) push(cells.join(' | '));
+      continue;
+    }
+    const text = ownText(el, BLOCKS);
+    if (text) push((TAG[el.tagName] || '') + text);
+  }
+  return lines.join('\\n');
+})()`;
+
+/**
+ * 방법 3 — **보이는 글 그대로.** 마지막 보루다. 어떤 페이지에서도 무언가는 나온다.
+ * 다만 마크다운 기호가 없어 **라운드 구분을 잃는다** (재 봤다: 마크다운은 2라운드로
+ * 갈리는데 이건 한 덩어리가 된다). 그래서 앞의 둘이 되면 그쪽이 이긴다 — 고르는
+ * 일은 shared/notionDoc.js 의 pickBody 가 실제로 파서에 넣어 보고 정한다.
+ */
+const EXTRACT_PLAIN = `(() => {
+  const root = document.querySelector('.notion-page-content') || document.querySelector('main') || document.body;
+  return (root.innerText || '')
+    .replace(/\\u00a0/g, ' ')
+    .split('\\n')
+    .map((l) => l.replace(/[ \\t]+/g, ' ').trim())
+    .filter(Boolean)
+    .join('\\n');
+})()`;
+
+/** 페이지 제목 */
+const TITLE = `(() => {
+  const el =
     document.querySelector('.notion-page-block .notion-page-title-text') ||
     document.querySelector('[placeholder="Untitled"]') ||
     document.querySelector('h1');
-  const title = ((titleEl && titleEl.textContent) || document.title || '').trim();
-
-  return { title, markdown: lines.join('\\n'), links, blocks: lines.length };
+  return ((el && el.textContent) || document.title || '').replace(/\\u00a0/g, ' ').trim();
 })()`;
+
+/** 예전 이름 — 방법 1이 곧 예전에 쓰던 그 코드다 */
+const EXTRACT = EXTRACT_NOTION;
 
 /** 페이지가 다 그려졌는지 — 노션은 껍데기부터 오므로 글이 생길 때까지 기다린다 */
 const READY = `(() => {
@@ -171,8 +270,14 @@ function createBrowser() {
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 /**
- * 한 페이지를 열어 글과 하위 페이지 목록을 긁는다.
- * @returns {Promise<{title: string, markdown: string, links: Array<{href: string, title: string}>, blocks: number}>}
+ * 한 페이지를 열어 **세 가지 방법으로** 글을 긁고, 하위 페이지 링크를 모은다.
+ *
+ * 어느 것을 쓸지는 여기서 안 정한다 — 부르는 쪽이 `pickBody`로 **실제 파서에 넣어
+ * 보고** 고른다 (shared/notionDoc.js). 내가 노션 화면을 못 보는 상태에서 "이 선택자가
+ * 맞다"에 기대지 않으려는 것이다.
+ *
+ * @returns {Promise<{title: string, candidates: Array<{how: string, markdown: string}>,
+ *                    links: Array<{href: string, title: string}>, prepared: any}>}
  */
 async function scrapePage(win, url, { timeout = RENDER_TIMEOUT } = {}) {
   await win.loadURL(url);
@@ -184,9 +289,28 @@ async function scrapePage(win, url, { timeout = RENDER_TIMEOUT } = {}) {
     if (Date.now() > until) throw new Error('페이지가 다 안 그려졌어요 (노션이 느리거나 주소가 잘못됐을 수 있어요).');
     await wait(250);
   }
-  // 그려진 뒤에도 늦게 붙는 블록이 있다 — 한 박자 쉬고 긁는다
-  await wait(400);
-  return win.webContents.executeJavaScript(EXTRACT);
+  // 토글 펴고 끝까지 훑어 내린다 — 안 하면 조용히 절반만 긁힌다 (PREPARE 참고)
+  const prepared = await win.webContents.executeJavaScript(PREPARE).catch(() => null);
+  await wait(300);
+
+  const run = (code) => win.webContents.executeJavaScript(code).catch(() => '');
+  const [title, notion, semantic, plain, links] = await Promise.all([
+    run(TITLE),
+    run(EXTRACT_NOTION),
+    run(EXTRACT_SEMANTIC),
+    run(EXTRACT_PLAIN),
+    win.webContents.executeJavaScript(LINKS).catch(() => []),
+  ]);
+  return {
+    title: String(title || ''),
+    candidates: [
+      { how: 'notion', markdown: String(notion || '') },
+      { how: 'semantic', markdown: String(semantic || '') },
+      { how: 'plain', markdown: String(plain || '') },
+    ],
+    links: Array.isArray(links) ? links : [],
+    prepared,
+  };
 }
 
 /**
@@ -195,17 +319,20 @@ async function scrapePage(win, url, { timeout = RENDER_TIMEOUT } = {}) {
  * @param {string} url 노션 공개 페이지 주소
  * @param {{onProgress?: (done: number, title: string) => void, maxPages?: number,
  *          maxDepth?: number, timeout?: number, browser?: any}} [options]
- * @returns {Promise<{ok: boolean, error: string, page: any, pages: number}>}
+ * @returns {Promise<{ok: boolean, error: string, page: any, pages: number,
+ *                    how: Record<string, number>}>} how = 방법별로 몇 페이지가 뽑혔는지
  */
 async function fetchTree(url, options = {}) {
   if (!isNotionUrl(url)) {
-    return { ok: false, error: '노션 공개 페이지 주소(https://…notion.site/…)를 넣어주세요.', page: null, pages: 0 };
+    return { ok: false, error: '노션 공개 페이지 주소(https://…notion.site/…)를 넣어주세요.', page: null, pages: 0, how: {} };
   }
   const maxPages = options.maxPages || MAX_PAGES;
   const maxDepth = options.maxDepth || MAX_DEPTH;
   const win = options.browser || createBrowser();
   const owned = !options.browser;
   const visited = new Set();
+  /** @type {Record<string, number>} 방법별로 몇 페이지가 뽑혔는지 — 어느 길로 긁혔는지 보여주려고 */
+  const how = {};
   let pages = 0;
 
   async function visit(pageUrl, depth) {
@@ -215,8 +342,11 @@ async function fetchTree(url, options = {}) {
     pages += 1;
     const got = await scrapePage(win, pageUrl, { timeout: options.timeout });
     if (options.onProgress) options.onProgress(pages, got.title);
+    // 세 방법 중 **실제로 제일 잘 읽히는 것**을 쓴다 (pickBody가 파서에 넣어 보고 고른다)
+    const best = pickBody(got.candidates);
+    how[best.how] = (how[best.how] || 0) + 1;
     /** @type {any} */
-    const node = { title: got.title, url: pageUrl, markdown: got.markdown, children: [] };
+    const node = { title: got.title, url: pageUrl, markdown: best.markdown, children: [] };
     for (const link of got.links) {
       const next = resolveLink(link.href, pageUrl);
       if (!next) continue;
@@ -229,25 +359,70 @@ async function fetchTree(url, options = {}) {
 
   try {
     const page = await visit(url, 0);
-    return { ok: Boolean(page), error: page ? '' : '페이지를 못 읽었어요.', page, pages };
+    return { ok: Boolean(page), error: page ? '' : '페이지를 못 읽었어요.', page, pages, how };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, error: `노션에서 도감을 못 받았어요: ${message}`, page: null, pages };
+    return { ok: false, error: `노션에서 도감을 못 받았어요: ${message}`, page: null, pages, how };
   } finally {
     if (owned && !win.isDestroyed()) win.destroy();
   }
 }
 
-/** 안 긁힐 때 실제 HTML을 떠 보는 길 — 선택자를 고치려면 이게 있어야 한다 */
-async function dumpHtml(url, { timeout = RENDER_TIMEOUT } = {}) {
+/**
+ * 진단 자료 한 벌 — 실제 HTML과 **세 방법이 각각 뽑아낸 글**을 통째로 뜬다.
+ *
+ * 이게 이 기능의 생명줄이다. 개발하는 곳에서 notion.site 가 막혀 있어서, 안 긁힐 때
+ * 고칠 방법이 이 파일 말고는 없다. HTML만 뜨면 "무엇이 왜 안 나왔는지"를 다시
+ * 재현해야 하므로, 앱이 실제로 본 결과까지 같이 담는다.
+ */
+async function dumpDiagnostics(url, { timeout = RENDER_TIMEOUT } = {}) {
   const win = createBrowser();
   try {
-    await win.loadURL(url);
-    await wait(timeout / 2);
-    return await win.webContents.executeJavaScript('document.documentElement.outerHTML');
+    const got = await scrapePage(win, url, { timeout }).catch((e) => ({
+      title: '',
+      candidates: [],
+      links: [],
+      prepared: null,
+      error: e instanceof Error ? e.message : String(e),
+    }));
+    const html = await win.webContents
+      .executeJavaScript('document.documentElement.outerHTML')
+      .catch(() => '');
+    const best = pickBody(got.candidates);
+    return {
+      url,
+      title: got.title,
+      prepared: got.prepared,
+      error: /** @type {any} */ (got).error || '',
+      picked: { how: best.how, stepCount: best.stepCount, strategy: best.strategy, groups: best.groups },
+      candidates: (got.candidates || []).map((c) => ({ how: c.how, length: c.markdown.length, markdown: c.markdown })),
+      links: got.links,
+      html,
+    };
   } finally {
     if (!win.isDestroyed()) win.destroy();
   }
 }
 
-module.exports = { fetchTree, scrapePage, createBrowser, dumpHtml, isNotionUrl, resolveLink, EXTRACT, READY };
+/** 예전 이름 — HTML 한 장만 (index.js 가 아직 쓴다) */
+async function dumpHtml(url, opts = {}) {
+  return (await dumpDiagnostics(url, opts)).html;
+}
+
+module.exports = {
+  fetchTree,
+  scrapePage,
+  createBrowser,
+  dumpDiagnostics,
+  dumpHtml,
+  isNotionUrl,
+  resolveLink,
+  PREPARE,
+  EXTRACT,
+  EXTRACT_NOTION,
+  EXTRACT_SEMANTIC,
+  EXTRACT_PLAIN,
+  LINKS,
+  TITLE,
+  READY,
+};

@@ -20,7 +20,7 @@ const { createStore } = require('./config');
 const { resolvePath, loadCatalog, watchCatalog, candidatePaths } = require('./catalog');
 const { createEngine } = require('./engine');
 const { createRecorder } = require('./recorder');
-const { fetchTree, dumpHtml } = require('./notion');
+const { fetchTree, dumpDiagnostics } = require('./notion');
 const { toCatalog } = require('../shared/notionDoc');
 const { loadTemplates } = require('../shared/turnReader');
 
@@ -323,14 +323,7 @@ function registerIpc() {
       // 이 저장소 안에서 확인할 방법이 없어서(개발하는 곳에서 notion.site 접속이
       // 막혀 있다), 선택자를 고치려면 실제 HTML이 있어야 한다. 전투 기록과 같은
       // 이유·같은 자리다 — 사람이 찾아서 보내 줄 수 있어야 쓸모가 있다.
-      let dumped = '';
-      try {
-        const html = await dumpHtml(address);
-        dumped = path.join(app.getPath('desktop'), `skre-노션-${Date.now()}.html`);
-        fs.writeFileSync(dumped, html, 'utf8');
-      } catch {
-        dumped = ''; // 뜨는 데 실패해도 아래 메시지는 나가야 한다
-      }
+      const dumped = await saveNotionDump(address);
       return {
         ok: false,
         pages: got.pages,
@@ -349,8 +342,39 @@ function registerIpc() {
     store.save({ notionUrl: address, buildsPath: file });
     refreshCatalog();
     rewatch();
-    // 도감 자체는 안 돌려준다 — 화면이 catalog:load 로 가벼운 목록만 다시 받는다
-    return { ok: true, pages: got.pages, builds: built.builds.length };
+    // 도감 자체는 안 돌려준다 — 화면이 catalog:load 로 가벼운 목록만 다시 받는다.
+    // how 는 **어느 방법으로 긁혔는지** — 'notion' 이 아니면 선택자가 밀렸다는 뜻이라
+    // 알아야 고칠 수 있다 (main/notion.js 의 세 가지 방법 참고).
+    return { ok: true, pages: got.pages, builds: built.builds.length, how: got.how };
+  });
+
+  /**
+   * 노션 페이지를 **떠서 바탕화면에 저장한다.**
+   *
+   * ★ 이게 이 기능의 생명줄이다. 개발하는 곳에서 notion.site 가 막혀 있어서, 안 긁힐 때
+   * 고칠 방법이 이 파일 말고는 없다. 실제 HTML과 **세 방법이 각각 뽑아낸 글**을 같이
+   * 담으므로, 무엇이 왜 안 나왔는지를 그 파일 하나로 알 수 있다.
+   * (전투 기록과 같은 이유·같은 자리다 — 사람이 찾아서 보내 줄 수 있어야 쓸모가 있다.)
+   */
+  async function saveNotionDump(address) {
+    try {
+      const diag = await dumpDiagnostics(address);
+      const stamp = new Date().toLocaleString('sv-SE').replace(/[-: ]/g, '').slice(0, 13);
+      const file = path.join(app.getPath('desktop'), `skre-노션-${stamp}.json`);
+      fs.writeFileSync(file, JSON.stringify(diag, null, 1), 'utf8');
+      return file;
+    } catch {
+      return ''; // 뜨는 데 실패해도 부르는 쪽 메시지는 나가야 한다
+    }
+  }
+
+  ipcMain.handle('catalog:dump-notion', async (_e, url) => {
+    const address = String(url || '').trim() || store.load().notionUrl;
+    if (!address) return { ok: false, error: '노션 도감 주소를 먼저 넣어주세요.' };
+    const file = await saveNotionDump(address);
+    return file
+      ? { ok: true, file }
+      : { ok: false, error: '페이지를 못 떴어요. 주소가 맞는지, 인터넷이 되는지 봐주세요.' };
   });
 
   ipcMain.handle('catalog:reveal', () => {

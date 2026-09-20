@@ -7,7 +7,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { toCatalog, weekdaysOf, looksLikeBuild, buildId, pageIdOf } = require('../src/shared/notionDoc');
+const { toCatalog, pickBody, weekdaysOf, looksLikeBuild, buildId, pageIdOf } = require('../src/shared/notionDoc');
 const { parseBuild } = require('../src/shared/steps');
 
 /** 실제 도감에 있던 본문 그대로 */
@@ -156,4 +156,96 @@ test('빈 나무에도 안전하다', () => {
   const only = toCatalog({ title: '내 빌드', markdown: BODY });
   assert.deepStrictEqual(only.builds.map((b) => b.name), ['내 빌드']);
   assert.strictEqual(only.builds[0].group, '');
+});
+
+
+// ─────────────────────────────── 어느 방법으로 긁은 것을 쓸지
+
+/** 같은 내용을 방법별로 긁었을 때 나올 법한 모양들 */
+const 마크다운 = [
+  '# 세팅',
+  '- 세인 속공 33 이상',
+  '',
+  '## 스킬 순서',
+  '### 1라운드',
+  '`0턴`비스킷 아래 / `4턴`나타 아래',
+  '### 2라운드 (8턴)',
+  '`8턴`세인 위 / `12턴`클로에 위',
+].join('\n');
+
+/** innerText 로 긁으면 마크다운 기호가 통째로 사라진다 */
+const 맨글씨 = 마크다운
+  .replace(/[#`]/g, '')
+  .replace(/^- /gm, '')
+  .split('\n')
+  .map((l) => l.trim())
+  .filter(Boolean)
+  .join('\n');
+
+test('제목 구조가 살아 있는 쪽을 고른다 — 단계 수가 같아도', () => {
+  // ★ 이게 이 기능의 핵심이다. 노션 화면을 개발하는 곳에서 볼 수 없으니 "내 선택자가
+  // 맞다"에 기대면 안 된다. 여러 방법으로 긁어 **파서에 실제로 넣어 보고** 고른다.
+  //
+  // 둘 다 4단계를 읽어내지만, 맨글씨는 **라운드 구분을 잃는다** (재 봤다: 마크다운은
+  // 2라운드로 갈리는데 맨글씨는 한 덩어리). 그러면 라운드별 변형을 못 고른다.
+  const got = pickBody([
+    { how: 'plain', markdown: 맨글씨 },
+    { how: 'notion', markdown: 마크다운 },
+  ]);
+  assert.strictEqual(got.how, 'notion');
+  assert.strictEqual(got.strategy, 'section');
+  assert.strictEqual(got.groups, 2);
+  assert.strictEqual(got.stepCount, 4);
+
+  // 순서를 바꿔 넣어도 같은 것을 골라야 한다 (먼저 온 것이 이기면 안 된다)
+  assert.strictEqual(pickBody([{ how: 'notion', markdown: 마크다운 }, { how: 'plain', markdown: 맨글씨 }]).how, 'notion');
+});
+
+test('단계를 하나도 못 읽는 방법은 지운다', () => {
+  const got = pickBody([
+    { how: 'notion', markdown: '' },
+    { how: 'semantic', markdown: '메뉴\n검색\n공유' }, // 껍데기만 긁힌 경우
+    { how: 'plain', markdown: 맨글씨 },
+  ]);
+  assert.strictEqual(got.how, 'plain');
+  assert.ok(got.stepCount > 0);
+});
+
+test('아무도 못 읽으면 제일 많이 건진 것을 준다', () => {
+  // 순서를 못 읽었다고 빌드를 숨기지 않는다 — 본문은 그대로 보여줘야 한다 (CLAUDE.md)
+  const got = pickBody([
+    { how: 'notion', markdown: '' },
+    { how: 'semantic', markdown: '짧은 메모' },
+    { how: 'plain', markdown: '이 빌드는 아직 정리 중입니다. 나중에 채웁니다.' },
+  ]);
+  assert.strictEqual(got.how, 'plain');
+  assert.strictEqual(got.stepCount, 0);
+  assert.ok(got.markdown.length > 0, '본문이 비면 화면에 보여줄 것이 없다');
+});
+
+test('겹쳐 긁혀 단계가 부풀어도 제목 구조가 있는 쪽이 이긴다', () => {
+  // 태그로 긁는 방법은 같은 글이 조상·자손에서 겹쳐 나올 수 있다. 그러면 단계가
+  // 두 배로 세어져 "많이 읽은 쪽"이 이겨 버린다 — 그래서 단계 수보다 구조를 먼저 본다.
+  const 겹침 = [맨글씨, 맨글씨].join('\n');
+  const got = pickBody([
+    { how: 'semantic', markdown: 겹침 },
+    { how: 'notion', markdown: 마크다운 },
+  ]);
+  assert.strictEqual(got.how, 'notion', `부풀린 쪽이 이겼다: ${JSON.stringify(got)}`);
+});
+
+test('같은 것을 읽어냈으면 짧은 쪽 — 군더더기가 적다', () => {
+  const 군더더기 = `${마크다운}\n\n메뉴\n검색\n공유\n복제\n댓글\n업데이트`;
+  const got = pickBody([
+    { how: 'semantic', markdown: 군더더기 },
+    { how: 'notion', markdown: 마크다운 },
+  ]);
+  assert.strictEqual(got.how, 'notion');
+});
+
+test('빈 입력에도 안전하다', () => {
+  assert.strictEqual(pickBody([]).markdown, '');
+  assert.strictEqual(pickBody([]).how, 'none');
+  assert.strictEqual(pickBody(/** @type {any} */ (null)).how, 'none');
+  assert.strictEqual(pickBody(/** @type {any} */ ([null, undefined, { how: 'x' }])).how, 'none');
 });
