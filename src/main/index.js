@@ -22,6 +22,7 @@ const { createEngine } = require('./engine');
 const { createRecorder } = require('./recorder');
 const { fetchTree, dumpDiagnostics } = require('./notion');
 const { toCatalog } = require('../shared/notionDoc');
+const { pickSource } = require('../shared/capture');
 const { loadTemplates } = require('../shared/turnReader');
 
 const BUILTIN = loadTemplates(require('../shared/templates.json'));
@@ -408,22 +409,14 @@ function registerIpc() {
       types: ['screen'],
       thumbnailSize: { width: 0, height: 0 },
     });
-    const displays = screen.getAllDisplays();
-    const display =
-      displays.find((d) => String(d.id) === String(displayId)) || screen.getPrimaryDisplay();
-
-    let match = sources.find((s) => String(s.display_id) === String(displayId));
-    // 모니터가 하나뿐이면 display_id가 비는 환경이 있다. 여러 개인데 못 찾은 거면
-    // 엉뚱한 모니터를 조용히 읽게 되므로 오류를 낸다.
-    if (!match && sources.length === 1) match = sources[0];
-    if (!match) return null;
-
-    const scale = display.scaleFactor || 1;
-    return {
-      sourceId: match.id,
-      width: Math.round(display.size.width * scale),
-      height: Math.round(display.size.height * scale),
-    };
+    // 고르는 규칙은 shared/capture.js 에 순수 함수로 있다 — 모니터가 여럿인 PC가
+    // 여기 없어서, 목록을 손으로 지어 넣는 테스트로만 잠글 수 있기 때문이다.
+    return pickSource({
+      displayId,
+      sources,
+      displays: screen.getAllDisplays(),
+      primaryId: screen.getPrimaryDisplay().id,
+    });
   });
 
   ipcMain.on('overlay:click-through', (_e, on) => {
