@@ -209,17 +209,43 @@ const TITLE = `(() => {
 /** 예전 이름 — 방법 1이 곧 예전에 쓰던 그 코드다 */
 const EXTRACT = EXTRACT_NOTION;
 
-/** 페이지가 다 그려졌는지 — 노션은 껍데기부터 오므로 글이 생길 때까지 기다린다 */
+/**
+ * 페이지가 다 그려졌는지 — 노션은 껍데기부터 오므로 글이 생길 때까지 기다린다.
+ *
+ * **노션 클래스에만 기대지 않는다.** 그 이름이 바뀌거나 페이지가 다른 모양이면
+ * 여기서 영영 못 기다리고 통째로 실패한다 — 정작 글은 다 그려져 있는데도.
+ * 그래서 "글이 충분히 그려졌다"도 준비된 것으로 본다. 뒤의 세 방법 중
+ * `semantic`·`plain` 은 노션 클래스가 없어도 읽어낸다.
+ */
 const READY = `(() => {
   const c = document.querySelector('.notion-page-content');
   if (c && c.children.length > 0) return true;
-  return document.querySelectorAll('[class*="notion-"][class*="-block"]').length > 0;
+  if (document.querySelectorAll('[class*="notion-"][class*="-block"]').length > 0) return true;
+  const text = ((document.body && document.body.innerText) || '').replace(/\\s+/g, '');
+  return text.length > 200;
 })()`;
+
+/**
+ * 사람이 붙여넣은 주소를 다듬는다.
+ *
+ * 주소창에서 긁어 오면 `https://` 가 빠지는 일이 흔하다 (`damageamplification.notion.site/…`).
+ * 그걸 그대로 `new URL()` 에 넣으면 던져서 **"주소를 넣어주세요"만 뜨고 끝난다** —
+ * 사람 입장에선 분명히 넣었는데 안 넣었다고 하는 셈이다. 앞뒤 공백과 따옴표도 뗀다.
+ */
+function normalizeUrl(raw) {
+  const text = String(raw || '')
+    .trim()
+    .replace(/^["'<]+|["'>]+$/g, '');
+  if (!text) return '';
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(text)) return text;
+  // 스킴이 없으면 https 로 본다 (http 로 적었으면 위에서 그대로 통과해 아래서 걸린다)
+  return `https://${text}`;
+}
 
 /** 노션 주소인가 — 아무 주소나 열지 않는다 */
 function isNotionUrl(url) {
   try {
-    const u = new URL(String(url));
+    const u = new URL(normalizeUrl(url));
     return u.protocol === 'https:' && /(^|\.)notion\.(site|so)$/.test(u.hostname);
   } catch {
     return false;
@@ -276,17 +302,22 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
  * 보고** 고른다 (shared/notionDoc.js). 내가 노션 화면을 못 보는 상태에서 "이 선택자가
  * 맞다"에 기대지 않으려는 것이다.
  *
- * @returns {Promise<{title: string, candidates: Array<{how: string, markdown: string}>,
+ * @returns {Promise<{ready: boolean, title: string,
+ *                    candidates: Array<{how: string, markdown: string}>,
  *                    links: Array<{href: string, title: string}>, prepared: any}>}
  */
 async function scrapePage(win, url, { timeout = RENDER_TIMEOUT } = {}) {
   await win.loadURL(url);
   const until = Date.now() + timeout;
   // 다 그려질 때까지 기다린다. did-finish-load 는 껍데기만 왔을 때 이미 뜬다.
+  //
+  // ★ 시간이 지나도 **던지지 않는다.** 던지면 글이 멀쩡히 그려져 있는데도 아무것도
+  // 못 건지고 끝난다 — 페이지 모양이 예상과 다를 때가 바로 그 경우다. 일단 긁어
+  // 보고, 아무것도 안 나오면 부르는 쪽이 화면을 떠서 남긴다 (그래야 고칠 수 있다).
+  let ready = false;
   for (;;) {
-    const ready = await win.webContents.executeJavaScript(READY).catch(() => false);
-    if (ready) break;
-    if (Date.now() > until) throw new Error('페이지가 다 안 그려졌어요 (노션이 느리거나 주소가 잘못됐을 수 있어요).');
+    ready = await win.webContents.executeJavaScript(READY).catch(() => false);
+    if (ready || Date.now() > until) break;
     await wait(250);
   }
   // 토글 펴고 끝까지 훑어 내린다 — 안 하면 조용히 절반만 긁힌다 (PREPARE 참고)
@@ -302,6 +333,7 @@ async function scrapePage(win, url, { timeout = RENDER_TIMEOUT } = {}) {
     win.webContents.executeJavaScript(LINKS).catch(() => []),
   ]);
   return {
+    ready,
     title: String(title || ''),
     candidates: [
       { how: 'notion', markdown: String(notion || '') },
@@ -320,12 +352,22 @@ async function scrapePage(win, url, { timeout = RENDER_TIMEOUT } = {}) {
  * @param {{onProgress?: (done: number, title: string) => void, maxPages?: number,
  *          maxDepth?: number, timeout?: number, browser?: any}} [options]
  * @returns {Promise<{ok: boolean, error: string, page: any, pages: number,
- *                    how: Record<string, number>}>} how = 방법별로 몇 페이지가 뽑혔는지
+ *                    how: Record<string, number>,
+ *                    failed: Array<{url: string, error: string}>}>}
+ *   how = 방법별로 몇 페이지가 뽑혔는지 · failed = 못 연 페이지
  */
 async function fetchTree(url, options = {}) {
   if (!isNotionUrl(url)) {
-    return { ok: false, error: '노션 공개 페이지 주소(https://…notion.site/…)를 넣어주세요.', page: null, pages: 0, how: {} };
+    return {
+      ok: false,
+      error: '노션 공개 페이지 주소(https://…notion.site/…)를 넣어주세요.',
+      page: null,
+      pages: 0,
+      how: {},
+      failed: [],
+    };
   }
+  const start = normalizeUrl(url);
   const maxPages = options.maxPages || MAX_PAGES;
   const maxDepth = options.maxDepth || MAX_DEPTH;
   const win = options.browser || createBrowser();
@@ -333,6 +375,8 @@ async function fetchTree(url, options = {}) {
   const visited = new Set();
   /** @type {Record<string, number>} 방법별로 몇 페이지가 뽑혔는지 — 어느 길로 긁혔는지 보여주려고 */
   const how = {};
+  /** @type {Array<{url: string, error: string}>} 못 연 페이지 — 조용히 삼키지 않는다 */
+  const failed = [];
   let pages = 0;
 
   async function visit(pageUrl, depth) {
@@ -340,7 +384,18 @@ async function fetchTree(url, options = {}) {
     if (visited.has(key) || pages >= maxPages || depth > maxDepth) return null;
     visited.add(key);
     pages += 1;
-    const got = await scrapePage(win, pageUrl, { timeout: options.timeout });
+    // ★ **한 장이 실패해도 전체를 버리지 않는다.**
+    //
+    // 예전엔 여기에 try 가 없어서, 하위 페이지 한 장이 느리거나 못 열리면 그 예외가
+    // 재귀를 뚫고 올라가 **수십 장 긁은 것이 통째로 0개가 됐다.** 바로 아래 주석이
+    // "못 열었으면 제목만이라도 남긴다"인데 그 처리는 예외에는 닿지 않았다.
+    let got;
+    try {
+      got = await scrapePage(win, pageUrl, { timeout: options.timeout });
+    } catch (e) {
+      failed.push({ url: pageUrl, error: e instanceof Error ? e.message : String(e) });
+      return null;
+    }
     if (options.onProgress) options.onProgress(pages, got.title);
     // 세 방법 중 **실제로 제일 잘 읽히는 것**을 쓴다 (pickBody가 파서에 넣어 보고 고른다)
     const best = pickBody(got.candidates);
@@ -358,11 +413,12 @@ async function fetchTree(url, options = {}) {
   }
 
   try {
-    const page = await visit(url, 0);
-    return { ok: Boolean(page), error: page ? '' : '페이지를 못 읽었어요.', page, pages, how };
+    const page = await visit(start, 0);
+    const why = failed.length > 0 ? failed[0].error : '페이지를 못 읽었어요.';
+    return { ok: Boolean(page), error: page ? '' : why, page, pages, how, failed };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
-    return { ok: false, error: `노션에서 도감을 못 받았어요: ${message}`, page: null, pages, how };
+    return { ok: false, error: `노션에서 도감을 못 받았어요: ${message}`, page: null, pages, how, failed };
   } finally {
     if (owned && !win.isDestroyed()) win.destroy();
   }
@@ -377,8 +433,9 @@ async function fetchTree(url, options = {}) {
  */
 async function dumpDiagnostics(url, { timeout = RENDER_TIMEOUT } = {}) {
   const win = createBrowser();
+  const address = normalizeUrl(url);
   try {
-    const got = await scrapePage(win, url, { timeout }).catch((e) => ({
+    const got = await scrapePage(win, address, { timeout }).catch((e) => ({
       title: '',
       candidates: [],
       links: [],
@@ -390,7 +447,7 @@ async function dumpDiagnostics(url, { timeout = RENDER_TIMEOUT } = {}) {
       .catch(() => '');
     const best = pickBody(got.candidates);
     return {
-      url,
+      url: address,
       title: got.title,
       prepared: got.prepared,
       error: /** @type {any} */ (got).error || '',
@@ -416,6 +473,7 @@ module.exports = {
   dumpDiagnostics,
   dumpHtml,
   isNotionUrl,
+  normalizeUrl,
   resolveLink,
   PREPARE,
   EXTRACT,

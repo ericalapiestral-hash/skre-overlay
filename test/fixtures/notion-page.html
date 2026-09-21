@@ -1,0 +1,70 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>PVE 시험용 — 노션 흉내</title>
+<!--
+  노션 공개 페이지를 **성질만** 흉내 낸 시험용 페이지.
+
+  개발하는 곳에서 notion.site 접속이 막혀 있어서 진짜 페이지는 영영 못 본다.
+  그렇다고 긁는 기계 전체를 한 번도 안 돌려 보고 내보낼 수는 없다 — 여기서
+  확인하는 건 "노션 화면이 맞나"가 아니라 **기계가 도는가**다:
+
+   · 숨긴 창에서 **자바스크립트가 돌아 DOM이 만들어지는가** (안 돌면 빈 껍데기만 긁힌다)
+   · PREPARE 가 **접힌 토글을 펴는가** (안 펴면 그 안의 빌드가 통째로 사라진다)
+   · PREPARE 가 **끝까지 훑어 내려 늦게 붙는 부분을 불러오는가**
+   · 세 방법이 각각 글을 뽑아내고, pickBody 가 제일 나은 것을 고르는가
+   · 하위 페이지 링크를 찾아내는가
+-->
+<style>
+  .notion-scroller { height: 400px; overflow: auto; }
+  .tall { height: 900px; }
+  [hidden] { display: none; }
+</style>
+<div class="notion-frame"><div class="notion-scroller"><div id="root">불러오는 중…</div></div></div>
+<script>
+  // ★ 노션처럼 **자바스크립트가** 내용을 만든다. HTML만 받아 오면 아무것도 없다 —
+  // 숨긴 창에서 이게 실제로 도는지가 이 시험의 핵심이다.
+  setTimeout(() => {
+    const root = document.getElementById('root');
+    root.innerHTML = [
+      '<div class="notion-page-block"><div class="notion-page-title-text">파이 세인 4턴</div></div>',
+      '<div class="notion-page-content">',
+      '  <div class="notion-header-block">세팅</div>',
+      '  <div class="notion-bulleted_list-block">세인 속공 33 이상</div>',
+      '  <div class="notion-sub_header-block">스킬 순서</div>',
+      '  <div class="notion-sub_sub_header-block">1라운드</div>',
+      '  <div class="notion-text-block">`0턴`비스킷 아래 / `4턴`나타 아래</div>',
+      '  <div class="notion-toggle-block">',
+      '    <div role="button" aria-expanded="false">2라운드 (접힘)</div>',
+      '    <div class="toggle-body" hidden></div>',
+      '  </div>',
+      '  <div class="tall"></div>',
+      '  <div id="lazy"></div>',
+      '  <div class="notion-page-block"><a href="/aaaaaaaabbbbccccddddeeeeffff0000">하위 빌드</a></div>',
+      '</div>',
+    ].join('\n');
+
+    // 접힌 토글 — 누르기 전에는 안의 글이 **DOM에 아예 없다** (노션과 같은 성질)
+    const toggle = root.querySelector('[aria-expanded="false"]');
+    toggle.addEventListener('click', () => {
+      toggle.setAttribute('aria-expanded', 'true');
+      const body = toggle.parentElement.querySelector('.toggle-body');
+      body.hidden = false;
+      body.innerHTML = [
+        '<div class="notion-sub_sub_header-block">2라운드</div>',
+        '<div class="notion-text-block">`8턴`세인 위 / `12턴`클로에 위</div>',
+      ].join('');
+    });
+
+    // 게으른 렌더링 — 바닥까지 내려가야 붙는다
+    const scroller = document.querySelector('.notion-scroller');
+    scroller.addEventListener('scroll', () => {
+      if (scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 40) return;
+      const lazy = document.getElementById('lazy');
+      if (lazy.childElementCount > 0) return;
+      lazy.innerHTML = [
+        '<div class="notion-sub_sub_header-block">3라운드</div>',
+        '<div class="notion-text-block">`16턴`리나 아래</div>',
+      ].join('');
+    });
+  }, 150);
+</script>

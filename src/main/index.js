@@ -30,6 +30,8 @@ const DOCTOR = process.argv.includes('--doctor');
 // 화면 없이 "앱이 진짜로 뜨는지"만 확인하는 모드 — test/smoke.test.js가 쓴다.
 // 단위 테스트는 순수 로직만 보므로 Electron·창·프리로드·IPC가 부러진 건 아무도 못 잡는다.
 const SMOKE = process.argv.includes('--smoke');
+// 노션 긁는 기계를 시험용 페이지로 한 번 돌려 본다 (test/notionScrape.test.js)
+const NOTION_SELFTEST = process.argv.find((a) => a.startsWith('--notion-selftest='));
 
 const RENDERER = path.join(__dirname, '..', 'renderer');
 const PRELOAD = path.join(__dirname, '..', 'preload');
@@ -311,10 +313,26 @@ function registerIpc() {
     const send = (channel, payload) => {
       if (overlayWin && !overlayWin.isDestroyed()) overlayWin.webContents.send(channel, payload);
     };
+    // ★ 주소는 **실패해도 저장한다.**
+    //
+    // 예전엔 성공했을 때만 저장해서, 한 번 실패하면 앱을 다시 켤 때 입력칸이 비었다.
+    // 그러면 [페이지 저장]마저 "주소를 먼저 넣어주세요"가 뜬다 — 정작 고칠 자료를
+    // 뜨려는 참인데. 잘 되는 길보다 **안 될 때의 길**이 막히면 안 된다.
+    store.save({ notionUrl: address });
+
     const got = await fetchTree(address, {
       onProgress: (done, title) => send('catalog:sync-progress', { done, title }),
     });
-    if (!got.ok || !got.page) return { ok: false, error: got.error };
+    if (!got.ok || !got.page) {
+      const dumped = await saveNotionDump(address);
+      return {
+        ok: false,
+        pages: got.pages,
+        error:
+          got.error +
+          (dumped ? ` 화면을 떠서 바탕화면에 뒀어요 — 이 파일을 주시면 고칠 수 있습니다: ${dumped}` : ''),
+      };
+    }
 
     const built = toCatalog(got.page);
     if (built.builds.length === 0) {
@@ -610,6 +628,42 @@ function doctor() {
   return 0;
 }
 
+/**
+ * --notion-selftest=<주소> — 노션 긁는 기계를 한 번 돌려 결과를 한 줄 JSON으로 뱉는다.
+ *
+ * **진짜 노션은 여기서 못 연다** (개발 환경에서 notion.site 가 막혀 있다). 그렇다고
+ * 기계 전체를 한 번도 안 돌려 보고 내보낼 수는 없어서, 노션의 **성질만** 흉내 낸
+ * 시험용 페이지로 확인한다 — 자바스크립트로 그려지고, 토글이 접혀 있고, 바닥까지
+ * 내려가야 붙는 부분이 있는 페이지다 (test/fixtures/notion-page.html).
+ *
+ * 여기서 걸리는 것: 숨긴 창에서 JS 가 안 도는 경우, executeJavaScript 가 막히는 경우,
+ * PREPARE 가 토글을 못 펴거나 스크롤이 안 먹는 경우, 추출 스크립트의 문법 오류.
+ */
+async function notionSelftest(url) {
+  const { createBrowser, scrapePage } = require('./notion');
+  const { pickBody } = require('../shared/notionDoc');
+  const win = createBrowser();
+  let out;
+  try {
+    const got = await scrapePage(win, url, { timeout: 15000 });
+    const best = pickBody(got.candidates);
+    out = {
+      ok: true,
+      title: got.title,
+      prepared: got.prepared,
+      links: got.links,
+      picked: { how: best.how, stepCount: best.stepCount, strategy: best.strategy, groups: best.groups },
+      candidates: got.candidates.map((c) => ({ how: c.how, markdown: c.markdown })),
+    };
+  } catch (e) {
+    out = { ok: false, error: e instanceof Error ? e.message : String(e) };
+  } finally {
+    if (!win.isDestroyed()) win.destroy();
+  }
+  process.stdout.write(`\nSKRE_NOTION ${JSON.stringify(out)}\n`);
+  app.exit(out.ok ? 0 : 1);
+}
+
 // ─────────────────────────────── 시작
 
 /**
@@ -718,6 +772,10 @@ if (!DOCTOR && !app.requestSingleInstanceLock()) {
     createOverlay();
     rewatch();
     registerShortcuts();
+    if (NOTION_SELFTEST) {
+      notionSelftest(NOTION_SELFTEST.slice('--notion-selftest='.length));
+      return;
+    }
     if (SMOKE) smoke();
   });
 
