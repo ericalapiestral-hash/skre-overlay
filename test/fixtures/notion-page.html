@@ -10,7 +10,10 @@
 
    · 숨긴 창에서 **자바스크립트가 돌아 DOM이 만들어지는가** (안 돌면 빈 껍데기만 긁힌다)
    · PREPARE 가 **접힌 토글을 펴는가** (안 펴면 그 안의 빌드가 통째로 사라진다)
-   · PREPARE 가 **끝까지 훑어 내려 늦게 붙는 부분을 불러오는가**
+   · PREPARE 가 **끝까지 훑어 내려 늦게 붙는 부분을 불러오는가** — 그것도 **한 번에
+     안 오는 것까지.** 늦게 붙는 부분을 두 단계로 나누고 각 단계에 LAZY_MS 만큼
+     뜸을 들인다 (느린 회선 흉내). 뜸 한 번을 "다 내려왔다"로 보고 멈추는 코드는
+     2단계를 영영 못 불러온다 — 오류도 없이 페이지 절반이 조용히 사라진다.
    · 세 방법이 각각 글을 뽑아내고, pickBody 가 제일 나은 것을 고르는가
    · 하위 페이지 링크를 찾아내는가
 -->
@@ -55,16 +58,38 @@
       ].join('');
     });
 
-    // 게으른 렌더링 — 바닥까지 내려가야 붙는다
+    // 게으른 렌더링 — 바닥까지 내려가야 붙고, **한 번에 다 오지도 않는다.**
+    //
+    // 실제 노션도 긴 페이지를 내려갈수록 조금씩 더 그린다. 여기서 중요한 건 뜸(LAZY_MS)이다:
+    // 200ms 한 틱 조용하다고 "다 내려왔다"로 보고 멈추는 코드는 1단계까지만 받고 끝내서
+    // **2단계를 영영 못 불러온다.** 오류는 안 나고 빌드 수만 조용히 준다.
+    // 이 뜸을 없애면 그 버그를 이 시험이 더는 못 잡는다 — 줄이지 말 것.
+    const LAZY_MS = 600;
+    let stage = 0;
+    let pending = false;
     const scroller = document.querySelector('.notion-scroller');
     scroller.addEventListener('scroll', () => {
       if (scroller.scrollTop + scroller.clientHeight < scroller.scrollHeight - 40) return;
-      const lazy = document.getElementById('lazy');
-      if (lazy.childElementCount > 0) return;
-      lazy.innerHTML = [
-        '<div class="notion-sub_sub_header-block">3라운드</div>',
-        '<div class="notion-text-block">`16턴`리나 아래</div>',
-      ].join('');
+      if (pending || stage >= 2) return;
+      pending = true;
+      setTimeout(() => {
+        pending = false;
+        stage += 1;
+        const lazy = document.getElementById('lazy');
+        if (stage === 1) {
+          lazy.innerHTML = [
+            '<div class="notion-sub_sub_header-block">3라운드</div>',
+            '<div class="notion-text-block">`16턴`리나 아래</div>',
+            // 붙고 나면 더 내려갈 자리가 생긴다 — 한 번 더 훑어야 2단계가 온다
+            '<div style="height:220px"></div>',
+          ].join('');
+        } else {
+          lazy.insertAdjacentHTML('beforeend', [
+            '<div class="notion-sub_sub_header-block">4라운드</div>',
+            '<div class="notion-text-block">`20턴`스핑크스 위</div>',
+          ].join(''));
+        }
+      }, LAZY_MS);
     });
   }, 150);
 </script>

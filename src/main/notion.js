@@ -62,13 +62,24 @@ const PREPARE = `(async () => {
     document.querySelector('.notion-scroller') ||
     document.scrollingElement ||
     document.body;
+  // **한 번 조용하다고 끝난 게 아니다.** 예전엔 높이가 한 틱(200ms) 안 늘면 바로
+  // 끝냈는데, 늦게 붙는 부분이 그 200ms 안에 안 들어오면 (느린 회선·바쁜 CPU)
+  // 거기서 멈춰 **페이지 절반을 조용히 버렸다.** 오류도 안 나고 빌드 수만 줄어든다.
+  // 실제로 시험용 페이지에서 CPU를 물려 놓으면 세 번에 한 번 그렇게 됐다.
+  // 세 틱(600ms) 연속으로 안 늘어야 바닥으로 본다.
   let last = -1;
-  for (let i = 0; i < 40; i += 1) {
+  let quiet = 0;
+  for (let i = 0; i < 60; i += 1) {
     try { scroller.scrollTop = scroller.scrollHeight; } catch (e) { /* 무시 */ }
     window.scrollTo(0, document.body.scrollHeight);
     await rest(200);
     const h = Math.max(scroller.scrollHeight || 0, document.body.scrollHeight || 0);
-    if (h === last) break;
+    if (h === last) {
+      quiet += 1;
+      if (quiet >= 3) break;
+      continue;
+    }
+    quiet = 0;
     last = h;
   }
   try { scroller.scrollTop = 0; } catch (e) { /* 무시 */ }
