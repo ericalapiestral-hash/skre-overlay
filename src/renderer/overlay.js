@@ -260,8 +260,36 @@ async function renderSteps() {
   raw.classList.add('hidden');
   wrap.classList.remove('hidden');
 
+  // 라운드 이름은 **바뀌는 자리에만** 한 번 둔다.
+  // 예전엔 줄마다 붙였는데, 한 라운드가 아홉 줄이면 "2라운드 4턴 파멸"이 아홉 번
+  // 반복돼 정작 읽어야 할 행동이 그 사이에 묻혔다. 되돌리지 말 것.
+  //
+  // 이름이 하나뿐이면(변형 없는 빌드) 제목을 아예 안 단다 — 모든 줄에 똑같이
+  // 해당하는 말은 정보가 아니라 자리만 차지한다.
+  const labels = [...new Set(state.steps.map((s) => s.label).filter(Boolean))];
+  const showHeads = labels.length > 1;
+
   const frag = document.createDocumentFragment();
+  // 제목 줄과 그 라운드의 단계들을 **한 상자에 묶는다.** 형제로 나란히 두면
+  // 붙박이(sticky) 제목이 전부 맨 위 같은 자리에 겹쳐 쌓인다 — 묶어 둬야
+  // 다음 라운드 제목이 앞 제목을 밀어내며 지나간다
+  /** @type {DocumentFragment|HTMLDivElement} */
+  let box = frag;
+  let lastLabel = null;
   state.steps.forEach((step, i) => {
+    if (showHeads && step.label && step.label !== lastLabel) {
+      const group = document.createElement('div');
+      group.className = 'seg';
+      const head = document.createElement('div');
+      head.className = 'seg-head';
+      head.textContent = step.label;
+      head.title = step.label; // 길면 …로 잘리므로 전체는 툴팁으로
+      group.appendChild(head);
+      frag.appendChild(group);
+      box = group;
+    }
+    lastLabel = step.label;
+
     const row = document.createElement('div');
     row.className = 'step';
 
@@ -271,13 +299,12 @@ async function renderSteps() {
     const act = document.createElement('span');
     act.className = 'act';
     act.textContent = step.text;
-    const seg = document.createElement('span');
-    seg.className = 'seg';
-    seg.textContent = step.label;
 
-    row.append(turn, act, seg);
+    row.append(turn, act);
     row.onclick = () => jumpTo(i);
-    frag.appendChild(row);
+    box.appendChild(row);
+    // stepRows 에는 **단계 줄만** 담는다. 제목 줄까지 섞이면 highlightStep 의
+    // 번호가 단계 번호와 어긋나서 엉뚱한 줄이 커진다 (DOM 이 어떻게 묶였든 상관없다)
     stepRows.push(row);
   });
   wrap.appendChild(frag);
@@ -294,7 +321,11 @@ function highlightStep() {
   if (stepRows.length === 0) return;
   state.index = Math.max(0, Math.min(state.index, stepRows.length - 1));
   stepRows.forEach((row, i) => {
-    const cls = `step${i < state.index ? ' done' : i === state.index ? ' now' : ''}`;
+    // 바로 다음 줄도 따로 표시한다 — 곁눈질 한 번에 "지금"과 "다음"이 같이
+    // 들어와야 손이 미리 움직인다
+    const mark =
+      i < state.index ? ' done' : i === state.index ? ' now' : i === state.index + 1 ? ' next' : '';
+    const cls = `step${mark}`;
     if (row.className !== cls) row.className = cls;
   });
   const now = stepRows[state.index];
