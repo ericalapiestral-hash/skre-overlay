@@ -3,8 +3,12 @@
 세븐나이츠 리버스 **파괴신·공성전** 전용 빌드 오버레이. 게임 화면 위에 스킬 순서를
 띄워 두고, 게임의 턴 숫자를 읽어 다음 단계로 자동으로 넘겨준다.
 
-길드봇([guild-bot](https://github.com/ericalapiestral-hash/guild-bot))이 노션 도감을
-읽어 만들어 두는 `data/builds.json`을 그대로 읽는다 — 노션 토큰도, 네트워크도 필요 없다.
+도감을 넣는 길이 둘이다. **설정에 노션 공개 페이지 주소를 넣으면 앱이 직접 받아온다**
+(숨긴 창으로 열어 화면에 그려진 글을 읽는다 — 토큰이 필요 없다). 또는
+길드봇([guild-bot](https://github.com/ericalapiestral-hash/guild-bot))이 만들어 두는
+`data/builds.json`을 그대로 읽는다. 어느 쪽이든 그 뒤는 똑같이 흐른다.
+
+**앱 자체에는 도감이 안 들어간다** — 쓰는 사람이 자기 것을 넣는다.
 
 ## 쓰는 법
 
@@ -86,7 +90,7 @@ npm start
 ## 개발
 
 ```
-npm test         파서 · 추적 · 인식기 · 도감 + 전투 시나리오 82개 + 부팅 확인 (183개)
+npm test         파서 · 추적 · 인식기 · 도감 + 전투 시나리오 76개 + 부팅 확인 (240개)
 npm run typecheck 타입 검사 (JSDoc 기반, 빌드 단계 없음)
 npm run check    위 둘 다
 npm run doctor   도감을 어디서 찾았고 몇 개를 읽었는지 (화면 없이)
@@ -95,7 +99,8 @@ npm run bench    숫자 인식기 정확도·속도 재기
 
 `npm run bench`는 진짜 폰트로 그린 표본 792장을, **앱이 실제로 넣는 것과 같은 조건**
 (크롭을 64px로 키움)으로 읽어 맞음·모르겠음·틀림과 걸린 시간을 보여준다.
-지금은 **792장 중 790장 맞음, 오독 2장, 한 장에 1.4ms**다.
+지금은 **792장 중 790장 맞음, 오독 2장, 한 장에 0.5ms**다.
+앱이 실제로 도는 조건(최대 턴을 아는 조건)에서는 같은 표본 720장이 **전부** 맞는다.
 
 `npm run doctor` 는 게임을 켜지 않고도 "도감이 제대로 읽히는지"를 확인한다.
 빌드가 안 보인다는 얘기가 나오면 여기부터 보면 된다.
@@ -109,11 +114,17 @@ src/
     catalog.js  builds.json 찾기 · 읽기 · 감시
     engine.js   픽셀 한 장 → "지금 몇 번째 단계인지"
     recorder.js 전투 기록 — 실제 전투를 되돌려 볼 수 있게 모아 둔다
+    notion.js   노션 공개 페이지를 숨긴 창으로 열어 긁어온다
     config.js   설정 저장 (원자적 쓰기)
   shared/     화면도 캡처도 모르는 순수 로직 (전부 테스트로 확인된다)
     steps.js      도감 본문 → 스킬 순서 단계
     turnReader.js 숫자 인식기 (의존성 없음)
     follower.js   턴 추적기 — 연출·밀림·재시작을 견디며 단계를 따라간다
+    maxTurn.js    최대 턴 지켜보기 — "16 / 70"의 70을 언제 믿고 언제 잊나
+    battleEnd.js  전투가 끝났는지 — 결과 화면에서 쉬고 다음 전투에 깨어난다
+    notionDoc.js  긁어 온 페이지 나무 → 도감과 같은 모양
+    regions.js    턴 표시가 화면 어디에 있는지 (파괴신 기본 위치)
+    capture.js    어느 모니터를 캡처할지
     tracker.js    라운드 나누기 도우미
     templates.json 숫자 대조표
   preload/    화면에 열어 주는 통로 (contextIsolation)
@@ -129,7 +140,7 @@ test/         단위 테스트 + 전투 시나리오(scenarios/*.json)
 ### 배포용 exe
 
 ```
-npm run dist    → dist/skre-overlay-1.0.0.exe (포터블, 설치 불필요)
+npm run dist    → dist/skre-overlay-0.9.0.exe (포터블, 설치 불필요)
 ```
 
 > ⚠️ **exe를 공개된 곳에 올리지 말 것.** 도감(`builds.json`)이 길드 내부 자료다.
