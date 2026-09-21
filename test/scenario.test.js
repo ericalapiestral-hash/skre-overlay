@@ -24,6 +24,13 @@ for (const file of files) {
   test(`${file} — ${scenario.name}`, () => {
     assert.ok(Array.isArray(scenario.steps) && scenario.steps.length > 0, 'steps가 비었다');
     assert.ok(Array.isArray(scenario.frames) && scenario.frames.length > 0, 'frames가 비었다');
+    // ★ expect 가 비면 **아무것도 검사하지 않고 초록**이 된다. tools/replay.js 는 실제
+    // 기록을 `expect: []` 인 초안으로 뽑으므로(사람이 궤적을 보고 채우라고), 그걸 그대로
+    // 넣으면 개수만 늘고 잠기는 건 없다. 여기 들어온 파일은 채워져 있어야 한다.
+    assert.ok(
+      Array.isArray(scenario.expect) && scenario.expect.length > 0,
+      'expect 가 비었다 — 아무것도 검사하지 않는 시나리오다 (기록에서 뽑았으면 궤적을 보고 채울 것)',
+    );
     const trace = run(scenario);
     const problems = check(scenario, trace);
     assert.strictEqual(

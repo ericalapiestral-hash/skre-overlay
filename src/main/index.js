@@ -463,7 +463,9 @@ function registerIpc() {
   });
   ipcMain.handle('engine:reset', () => {
     engine.reset();
-    recorder.note('자동 껐다 켬');
+    // reset 표시를 꼭 같이 남긴다 — 이걸 빼면 되돌려 볼 때만 옛 기억을 들고 가서
+    // 궤적이 그때와 달라진다 (rest 와 같은 구멍이었다. recorder.js 의 Frame 참고)
+    recorder.note('자동 껐다 켬', undefined, { reset: true });
     return true;
   });
   // 구조적 복제로 이미 Uint8Array가 넘어온다 — 한 번 더 복사하면 프레임마다 헛일이다

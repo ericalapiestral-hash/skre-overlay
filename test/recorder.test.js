@@ -199,6 +199,67 @@ test('한 바퀴 — 전투가 끝나 쉬는 구간이 끼어도 같은 결론�
   );
 });
 
+test('한 바퀴 — 자동을 껐다 켠 구간이 끼어도 같은 결론이 나온다', { skip: !loadFixtures() }, () => {
+  // ★ rest 와 **똑같은 구멍**이 note 에도 있었다. 자동을 껐다 켜면 엔진이 읽기 기억을
+  // 지우는데(engine:reset), 기록에 그 사실을 안 남기면 되돌려 볼 때만 옛 기억을 들고
+  // 가서 궤적이 갈린다. 게임 폰트·추적기 상수·전투끝 문턱을 푸는 길이 전부 이 도구
+  // 하나인데, **도구가 실제와 다른 답을 내면 받은 기록이 쓸모없어진다.**
+  //
+  // 글(note)을 보고 짐작하지 않는다 — 되돌려 보는 코드가 한국어를 해석하게 두면
+  // 말을 조금만 고쳐도 조용히 어긋난다. reset 표시를 따로 남긴다.
+  const data = loadFixtures();
+  const pick = (v) => {
+    const s = data.samples.find((x) => x.value === v && x.height === 44 && !x.invert);
+    return s ? { gray: new Uint8Array(Buffer.from(s.gray, 'base64')), w: s.w, h: s.h } : null;
+  };
+  const twelve = pick(12);
+  const four = pick(4);
+  assert.ok(twelve && four);
+
+  let t = 0;
+  const engine = createEngine({ templates: TEMPLATES, now: () => (t += 100) });
+  engine.setFlow(GROUPS, {});
+  const rec = createRecorder({ now: () => t });
+  rec.setFlow(engine.flow, { build: '시험' });
+
+  const live = [];
+  const feed = (f) => {
+    const r = engine.feed(f.gray, f.w, f.h);
+    rec.frame(r, { gray: f.gray, w: f.w, h: f.h, now: t });
+    live.push(r.index);
+  };
+  for (let i = 0; i < 4; i += 1) feed(twelve); // 12턴까지 진행
+  const moved = engine.index;
+  assert.ok(moved > 0, '먼저 단계가 움직여 있어야 이 시험이 뜻이 있다');
+
+  // 자동을 껐다 켰다 — 앱이 하는 그대로
+  engine.reset();
+  rec.note('자동 껐다 켬', t, { reset: true });
+
+  for (let i = 0; i < 8; i += 1) feed(four); // 다시 4턴부터
+
+  const dumped = JSON.parse(JSON.stringify(rec.dump()));
+  const resets = dumped.frames.filter((f) => f.reset);
+  assert.strictEqual(resets.length, 1, `되돌림 표시가 ${resets.length}개 적혔다`);
+
+  // 재생 궤적은 note 프레임 한 줄이 더 끼므로, 실제로 읽은 프레임만 견준다
+  const trace = replay(dumped)
+    .filter((x) => x.why !== 'note')
+    .map((x) => x.index);
+  assert.deepStrictEqual(trace, live, '기록을 재생한 결과가 실제와 다르다');
+
+  const scenario = toScenario(dumped, '껐다 켠 구간');
+  assert.ok(
+    scenario.frames.some((f) => f.reset),
+    '시나리오로 뽑을 때 되돌림이 사라지면 안 된다 — 틀린 것을 자물쇠로 걸게 된다',
+  );
+  assert.deepStrictEqual(
+    run(scenario).filter((x) => !(x.frame && x.frame.reset)).map((x) => x.index),
+    live,
+    '시나리오로 뽑으면 결과가 달라진다',
+  );
+});
+
 test('기록 프레임의 시각이 고르지 않아도 재생된다', () => {
   // 실제 캡처는 100ms에 딱 맞춰 오지 않는다. 시나리오 러너가 t를 봐야 하는 이유다.
   //

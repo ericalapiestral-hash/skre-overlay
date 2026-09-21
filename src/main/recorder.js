@@ -37,7 +37,7 @@ const MAX_SAMPLE_BYTES = 6 * 1024 * 1024;
 
 /**
  * @typedef {{t: number, v: number|null, c?: number, drop?: number, rest?: boolean,
- *            i: number, why: string, set?: number, note?: string}} Frame
+ *            reset?: boolean, i: number, why: string, set?: number, note?: string}} Frame
  *   drop 최대 턴과 안 맞아 **버린** 값. v 는 null 이지만(추적기가 본 그대로)
  *        되돌려 볼 때는 "못 읽은 것"과 "버린 것"을 갈라 봐야 한다
  *   rest 이 프레임에서 **전투가 끝났다고 보고 쉬기 시작했다.** 엔진은 그때 읽기
@@ -136,9 +136,17 @@ function createRecorder(options = {}) {
     pushFrame({ t: now ?? clock(), v: null, i: index, why: 'set', set: index });
   }
 
-  /** 자유 표시 — 자동 켬/끔, 빌드 바꿈 같은 것 */
-  function note(text, now) {
-    pushFrame({ t: now ?? clock(), v: null, i: -1, why: 'note', note: String(text) });
+  /**
+   * 자유 표시 — 자동 켬/끔, 빌드 바꿈 같은 것.
+   *
+   * @param {{reset?: boolean}} [what] reset=true 면 **이때 엔진의 읽기 기억을 지웠다**는
+   *   뜻이다. 되돌려 볼 때 같이 지워야 궤적이 그때와 같아진다 (rest 와 같은 이유).
+   */
+  function note(text, now, what = {}) {
+    /** @type {Frame} */
+    const f = { t: now ?? clock(), v: null, i: -1, why: 'note', note: String(text) };
+    if (what.reset) f.reset = true;
+    pushFrame(f);
   }
 
   /**

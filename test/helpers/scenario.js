@@ -25,6 +25,9 @@ function run(scenario) {
     // {"rest": true} — 이 프레임에서 전투가 끝났다고 보고 쉬기 시작했다.
     // 엔진이 그때 읽기 기억을 지우므로(engine.feed) 여기서도 지운다.
     if (frame && typeof frame === 'object' && frame.rest) follower.reset();
+    // {"reset": true} — 이 프레임에서 자동을 껐다 켰다 (engine:reset). 엔진이 읽기
+    // 기억을 지우므로 여기서도 지운다.
+    if (frame && typeof frame === 'object' && frame.reset) follower.reset();
     let reading = null;
     if (typeof frame === 'number') reading = { value: frame, confidence: 0.95 };
     else if (frame && typeof frame === 'object' && frame.v !== null && frame.v !== undefined) {
@@ -57,7 +60,20 @@ function dump(trace) {
 
 function check(scenario, trace) {
   const problems = [];
-  const at = (i) => (trace[i] ? trace[i].index : trace[trace.length - 1].index);
+  // ★ 범위를 넘는 프레임 번호를 **조용히 넘기지 않는다.**
+  //
+  // 예전엔 없는 프레임을 물어보면 마지막 프레임의 index 를 돌려줬다. 그래서 expect 에
+  // 프레임 번호를 잘못 적어도 그냥 통과했고, 실제로 reset-06·resetb-06 이 프레임 28개
+  // (0~27)짜리에서 `to: 28` 을 검사하고 있었다. 시나리오는 이 프로젝트가 추적기 규칙을
+  // 정하는 방식이라, 여기가 헐거우면 **틀린 것을 자물쇠로 걸게 된다.**
+  const out = [];
+  const at = (i) => {
+    if (!trace[i]) {
+      out.push(i);
+      return -1;
+    }
+    return trace[i].index;
+  };
   for (const e of scenario.expect || []) {
     if (e.by !== undefined) {
       // k번째 프레임까지는(포함) index가 n이어야 한다
@@ -81,6 +97,11 @@ function check(scenario, trace) {
         }
       }
     }
+  }
+  if (out.length > 0) {
+    problems.push(
+      `expect 가 없는 프레임을 가리킨다: #${[...new Set(out)].join(', #')} (프레임은 0~${trace.length - 1})`,
+    );
   }
   return problems;
 }

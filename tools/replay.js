@@ -38,6 +38,9 @@ function replay(rec, { from = 0, to = Infinity } = {}) {
       return;
     }
     if (f.why === 'note') {
+      // ★ 자동을 껐다 켜면 엔진이 읽기 기억을 지운다 (engine:reset). 여기서 같이
+      // 안 지우면 되돌려 본 궤적이 그때와 갈린다 — rest 와 똑같은 구멍이었다.
+      if (f.reset) follower.reset();
       trace.push({ i, t: f.t, frame: f, index: follower.index, why: 'note', turn: follower.turn });
       return;
     }
@@ -52,7 +55,7 @@ function replay(rec, { from = 0, to = Infinity } = {}) {
 
 function show(f) {
   if (typeof f.set === 'number') return `손→${f.set}`;
-  if (f.why === 'note') return `※${f.note}`;
+  if (f.why === 'note') return f.reset ? '※되돌림' : `※${f.note}`;
   if (f.rest) return ' 쉼';
   // 최대 턴과 안 맞아 버린 프레임 — 못 읽은 것과 갈라서 보여준다
   if (f.drop !== undefined) return `✕${String(f.drop).padStart(2)}`;
@@ -117,9 +120,12 @@ function toScenario(rec, name, { from = 0, to = Infinity } = {}) {
     steps: rec.steps || [],
     start,
     frames: frames
-      .filter((f) => f.why !== 'note')
+      // 그냥 메모는 버리지만 **되돌림 표시는 남긴다** — 그게 빠지면 시나리오가
+      // 실제와 다른 궤적을 내고, 그걸 자물쇠로 걸면 틀린 것을 잠그게 된다
+      .filter((f) => f.why !== 'note' || f.reset)
       .map((f) => {
         if (typeof f.set === 'number') return { set: f.set, t: f.t - base };
+        if (f.reset) return { t: f.t - base, v: null, reset: true };
         if (f.v === null || f.v === undefined) {
           return f.rest ? { t: f.t - base, v: null, rest: true } : { t: f.t - base, v: null };
         }
