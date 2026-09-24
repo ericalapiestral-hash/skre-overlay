@@ -2,7 +2,6 @@
 // 이름을 잘못 쓰면 타입 검사에서 걸린다.
 
 interface OverlayApi {
-  tune: { cropHeight: number };
   catalog: {
     load(): Promise<any>;
     body(id: string): Promise<string>;

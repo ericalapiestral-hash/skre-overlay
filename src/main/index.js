@@ -24,7 +24,7 @@ const { fetchTree, dumpDiagnostics, isNotionUrl } = require('./notion');
 const { toCatalog } = require('../shared/notionDoc');
 const { parseBuild } = require('../shared/steps');
 const { pickSource } = require('../shared/capture');
-const { loadTemplates } = require('../shared/turnReader');
+const { loadTemplates, fitCrop } = require('../shared/turnReader');
 
 const BUILTIN = loadTemplates(require('../shared/templates.json'));
 const DOCTOR = process.argv.includes('--doctor');
@@ -571,9 +571,12 @@ function registerIpc() {
   });
   // 구조적 복제로 이미 Uint8Array가 넘어온다 — 한 번 더 복사하면 프레임마다 헛일이다
   ipcMain.handle('engine:feed', (_e, buf, w, h) => {
-    const gray = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
-    const r = engine.feed(gray, w, h);
-    recorder.frame(r, { gray, w, h });
+    // 화면은 **원본 크기로** 잘라 넘긴다. 인식기가 읽는 높이로 맞추는 일은 여기서 —
+    // 벤치와 같은 함수(fitCrop)로 한다. 캔버스로 키우면 벤치가 재는 그림과 달라진다.
+    const fit = fitCrop(buf instanceof Uint8Array ? buf : new Uint8Array(buf), w, h);
+    const r = engine.feed(fit.gray, fit.w, fit.h);
+    // 기록에는 **엔진이 본 그림**을 남긴다 — 되돌려 볼 때 같은 것을 다시 읽어야 한다
+    recorder.frame(r, fit);
     return r;
   });
 
@@ -620,9 +623,10 @@ function registerIpc() {
     const text = String(value).trim();
     if (!/^\d{1,3}$/.test(text)) return { ok: false, error: '0~999 사이 숫자를 넣어주세요.' };
 
-    const gray = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+    // 인식할 때와 **같은 크기로** 맞춰서 가르친다 (engine:feed 참고)
+    const fit = fitCrop(buf instanceof Uint8Array ? buf : new Uint8Array(buf), w, h);
     // 자르는 일은 엔진이 인식기와 **같은 길**로 한다 (engine.teachFrom 의 설명 참고)
-    const got = engine.teachFrom(gray, w, h, text);
+    const got = engine.teachFrom(fit.gray, fit.w, fit.h, text);
     if (!got.ok) {
       return {
         ok: false,
@@ -791,7 +795,6 @@ function smoke() {
           const api = window.overlay;
           const out = {
             bridge: api ? Object.keys(api).sort() : null,
-            cropHeight: api && api.tune && api.tune.cropHeight,
             elements: ['app', 'steps', 'status', 'build', 'auto', 'rate']
               .filter((id) => document.getElementById(id)),
             statusText: (document.getElementById('status') || {}).textContent || '',

@@ -9,6 +9,10 @@ const assert = require('node:assert');
 const {
   GRID_W,
   GRID_H,
+  CROP_TARGET_HEIGHT,
+  teachShapes,
+  fitCrop,
+  resizeGray,
   MATCH,
   toGray,
   otsuThreshold,
@@ -30,7 +34,7 @@ const {
   bestValue,
   readTurn,
 } = require('../src/shared/turnReader');
-const { toGrid, byDigit, bench, loadFixtures, RAW } = require('../tools/bench-reader');
+const { toGrid, byDigit, bench, loadFixtures, templatesFor, upscale, RAW } = require('../tools/bench-reader');
 
 const TEMPLATES = loadTemplates(RAW);
 const GROUPS = byDigit();
@@ -472,8 +476,13 @@ test('최대 턴을 알면 마지막 오독이 사라진다', { skip: !loadFixtu
   // 앱은 화면에서 최대 턴("16 / 70"의 70)을 스스로 알아낸다 (shared/maxTurn.js).
   // 알고 나면 **지금 턴의 자릿수가 정해진다** — 70턴 전투에서 세 자리는 있을 수 없다.
   // 남아 있던 오독 2장(44px "8"이 구멍까지 세 덩어리로 잡혀 "551")이 이걸로 사라진다.
-  const blind = bench({ maxTurn: 70, read: { maxTurn: 0 } });
-  const known = bench({ maxTurn: 70 });
+  //
+  // 지금 기본 계수(minMargin 0.05)에서는 그 2장이 최대 턴 없이도 안 틀린다. 그래도 이
+  // 장치가 도는지는 따로 잠가 둬야 한다 — 처음 보는 게임 폰트에서는 또 틀릴 수 있다.
+  // 그래서 **그 2장이 틀리던 계수(0.04)** 로 견준다.
+  const loose = { minMargin: 0.04 };
+  const blind = bench({ maxTurn: 70, read: { ...loose, maxTurn: 0 } });
+  const known = bench({ maxTurn: 70, read: loose });
   assert.ok(blind && known && blind.total === known.total);
   assert.ok(blind.wrong > 0, '견줄 것이 없으면 이 시험은 아무것도 안 잰다');
   assert.strictEqual(known.wrong, 0, `최대 턴을 알고도 틀렸다: ${known.misses.join(' | ')}`);
@@ -520,7 +529,7 @@ test('문턱값은 한 번이면 충분하다 — 여러 번은 오히려 나쁘
 
 test('한 장 읽는 시간이 예산 안에 있다', { skip: !loadFixtures() }, () => {
   // 인식 시간은 곧 인식 주기의 하한이다. 예전 구조(대조마다 부풀리기를 다시 계산)는
-  // 14ms였고, 그래서 주기를 600ms로 잡을 수밖에 없었다. 지금은 0.8ms 안팎이다.
+  // 14ms였고, 그래서 주기를 600ms로 잡을 수밖에 없었다. 지금은 0.5ms 안팎이다.
   // 여기 걸린 값은 느린 기계에서도 통과할 만큼 넉넉하게 잡았다 — 구조가 무너지면
   // 열 배 단위로 나빠지므로 이 정도로도 회귀는 잡힌다.
   const r = bench({});
@@ -529,11 +538,59 @@ test('한 장 읽는 시간이 예산 안에 있다', { skip: !loadFixtures() },
 });
 
 test('가르친 폰트에서는 더 정확하다', { skip: !loadFixtures() }, () => {
-  const taught = bench({ holdout: false });
-  const unseen = bench({});
+  // 앱과 **같은 길**(teachShapes)로 같은 크기의 화면에서 가르치고, 가르친 값은 빼고 잰다.
+  // ★ 예전 이 시험은 아무것도 안 가르치고 "가르친 뒤"를 쟀다 — 두 값이 늘 같아서
+  // 아무것도 확인하지 않았다. 제대로 재 보니 예전 가중치(1.12)에서는 가르치면 오히려
+  // 틀림이 생겼다 (TAUGHT_WEIGHT 참고).
+  const taught = bench({ taught: true });
+  const unseen = bench({ withoutTaught: true });
   assert.ok(taught && unseen);
+  assert.strictEqual(taught.total, unseen.total, '같은 표본으로 견줘야 한다');
+  assert.ok(taught.wrong <= unseen.wrong, `가르쳤더니 틀림이 ${unseen.wrong} → ${taught.wrong} 로 늘었다`);
   assert.ok(
     taught.ok >= unseen.ok,
     '실제 화면을 가르치면 최소한 나빠지지는 않아야 한다 — 아니면 가르치기가 헛수고다',
   );
+});
+
+test('한 자리 숫자도 가르칠 수 있다 — 구멍 쪽 명암이 끼어들지 않는다', { skip: !loadFixtures() }, () => {
+  // ★ 문턱을 0으로 낮춰 가르치면 평소엔 떨어지던 **글자 구멍 쪽 명암**이 살아남는다.
+  // "8"은 구멍이 둘이라 그쪽이 두 덩어리를 찾아 이겨서, 예전엔 "8"·"4"를 가르치면
+  // "숫자를 2개 찾았는데 1개라고 하셨어요"만 나왔다.
+  const data = loadFixtures();
+  const failed = [];
+  for (const s of data.samples.filter((x) => x.value < 10)) {
+    const img = upscale(new Uint8Array(Buffer.from(s.gray, 'base64')), s.w, s.h,
+      Math.max(1, Math.min(8, CROP_TARGET_HEIGHT / s.height)));
+    const got = teachShapes(img.gray, img.w, img.h, templatesFor(s.font), String(s.value));
+    if (!got.ok) failed.push(`${s.value} (${s.font} ${s.height}px${s.invert ? ' 반전' : ''}): ${got.found}개 찾음`);
+  }
+  assert.deepStrictEqual(failed, [], `한 자리 숫자를 못 가르쳤다:\n  ${failed.join('\n  ')}`);
+});
+
+test('크롭은 해상도와 상관없이 같은 높이로 맞춘다 — 크면 줄이고 작으면 키운다', () => {
+  // ★ 예전엔 키우기만 해서 4K(크롭 높이 93)는 원본 그대로 읽었다. 문턱은 전부 64 근처로
+  // 맞춘 그림에서 쟀는데 4K만 그 조건 밖이었다.
+  const big = new Uint8Array(192 * 93).fill(20);
+  const fitBig = fitCrop(big, 192, 93);
+  assert.strictEqual(fitBig.h, CROP_TARGET_HEIGHT);
+  assert.strictEqual(fitBig.w, Math.round(192 * (CROP_TARGET_HEIGHT / 93)));
+  const small = new Uint8Array(96 * 46).fill(20);
+  const fitSmall = fitCrop(small, 96, 46);
+  assert.strictEqual(fitSmall.h, CROP_TARGET_HEIGHT);
+  // 이미 그 높이면 손대지 않는다 (예전 기록의 표본은 이미 키워진 그림이다)
+  const same = new Uint8Array(100 * CROP_TARGET_HEIGHT);
+  assert.strictEqual(fitCrop(same, 100, CROP_TARGET_HEIGHT).gray, same);
+});
+
+test('줄일 때 가는 획이 사라지지 않는다', () => {
+  // 이중선형으로 줄이면 건너뛴 픽셀의 획이 통째로 빠진다 — 넓이 평균으로 줄인다
+  const w = 192;
+  const h = 93;
+  const img = new Uint8Array(w * h).fill(10);
+  for (let y = 0; y < h; y += 1) for (let x = 100; x < 102; x += 1) img[y * w + x] = 250;
+  const out = resizeGray(img, w, h, 64 / 93);
+  let brightest = 0;
+  for (let x = 0; x < out.w; x += 1) brightest = Math.max(brightest, out.gray[30 * out.w + x]);
+  assert.ok(brightest > 120, `두 칸짜리 세로 획이 줄이고 나서 ${brightest} 밝기로 흐려졌다`);
 });

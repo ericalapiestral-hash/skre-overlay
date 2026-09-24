@@ -15,14 +15,15 @@
 // 스스로 못 빠져나온다. 그래서 세 겹으로 막는다.
 //  · **또렷한 것만 센다** — 표본에서 틀린 최대 턴은 전부 흐리게(0.73) 읽혔다.
 //  · **다른 값이 계속 이어지면 갈아탄다** (채택보다 더 많은 증거를 요구한다).
-//  · **한동안 아무것도 못 읽으면 잊는다** — 위의 막다른 골목에서 빠져나오는 길이다.
+//  · **한동안 믿는 값을 또렷이 다시 못 보면 잊는다** — 위의 막다른 골목에서 빠져나오는
+//    길이다. "아무것도 못 읽으면"이 아니다: 막다른 골목에서도 한 자리 오독은 새어 들어온다.
 'use strict';
 
 /** 또렷한 같은 값이 이만큼 이어지면 믿는다 */
 const ADOPT = 3;
 /** 이미 믿는 값이 있을 때, 다른 값이 이만큼 이어져야 갈아탄다 */
 const RELEARN = 8;
-/** 이만큼 못 읽으면 믿던 값을 잊는다 (100ms 주기로 2초) */
+/** 믿는 값을 이만큼 또렷이 다시 못 보면 잊는다 (100ms 주기로 2초) */
 const FORGET = 20;
 /** 이 점수 아래로 읽힌 최대 턴은 세지도, 물리지도 않는다 */
 const STRONG = 0.86;
@@ -62,32 +63,40 @@ function createMaxTurnWatch(options = {}) {
    * @returns {Verdict}
    */
   function see(reading) {
-    if (!reading) {
-      blind += 1;
-      // 믿던 값이 틀려서 아무것도 안 읽히는 것일 수 있다 — 잊고 처음부터 다시 본다
-      if (known !== null && blind >= forget) reset();
-      return { trust: true, why: '' };
-    }
-    blind = 0;
+    const m = reading ? reading.max : null;
+    const strong = m !== null && m > 0 && (reading?.maxConfidence ?? 0) >= strongScore;
 
-    const m = reading.max;
+    // ★ "못 읽은 셈"은 **믿는 값을 또렷하게 다시 본 프레임에서만** 되돌린다.
+    //
+    // 예전엔 뭐든 읽히기만 하면(최대 턴이 없는 읽기라도) 되돌렸다. 그런데 70을 7로 잘못
+    // 믿는 막다른 골목에서도 **한 자리 오독**(글자 구멍을 읽은 "3", 최대 턴 없음)은 통과해
+    // 들어온다. 그게 열 프레임에 하나만 섞여도 잊기(FORGET)에 영영 못 닿아서, 이 겹 —
+    // 막다른 골목에서 빠져나오는 유일한 길 — 이 조용히 막혔다.
+    // 믿는 값이 맞다는 증거는 그 값이 또렷이 다시 보이는 것뿐이다.
+    if (known === null || (strong && m === known)) blind = 0;
+    else blind += 1;
+    // 믿던 값이 틀려서 아무것도 안 읽히는 것일 수 있다 — 잊고 처음부터 다시 본다
+    if (known !== null && blind >= forget) reset();
+
     // 슬래시가 안 보였거나 흐리게 읽혔으면 아무 판단도 안 한다.
     // (사용자가 영역을 숫자에만 딱 맞춰 잡았으면 여기서 늘 끝난다 — 검증이 통째로 꺼진다)
-    if (m === null || m <= 0 || (reading.maxConfidence ?? 0) < strongScore) {
-      return { trust: true, why: '' };
-    }
+    if (!strong) return { trust: true, why: '' };
 
     if (m === run.value) run.n += 1;
     else run = { value: m, n: 1 };
 
     if (known === null) {
-      if (run.n >= adopt) known = m;
+      if (run.n >= adopt) {
+        known = m;
+        blind = 0;
+      }
       return { trust: true, why: '' };
     }
     if (m === known) return { trust: true, why: '' };
     // 이어서 다른 값만 나오면 우리가 틀린 것이다
     if (run.n >= relearn) {
       known = m;
+      blind = 0;
       return { trust: true, why: '' };
     }
     return { trust: false, why: 'maxMismatch' };

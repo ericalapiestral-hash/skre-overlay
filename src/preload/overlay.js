@@ -6,7 +6,6 @@
 'use strict';
 
 const { contextBridge, ipcRenderer } = require('electron');
-const { CROP_TARGET_HEIGHT } = require('../shared/turnReader');
 const { PRESETS } = require('../shared/regions');
 
 /** 메인 → 렌더러 알림. 해제 함수를 돌려준다 */
@@ -17,8 +16,6 @@ function on(channel, handler) {
 }
 
 contextBridge.exposeInMainWorld('overlay', {
-  /** 인식기와 맞춰야 하는 값들 — 화면이 제 맘대로 정하면 재는 것과 어긋난다 */
-  tune: { cropHeight: CROP_TARGET_HEIGHT },
   catalog: {
     load: () => ipcRenderer.invoke('catalog:load'),
     /** 스킬 순서를 못 읽은 빌드의 도감 본문 — 필요할 때만 받아 온다 */

@@ -21,8 +21,14 @@ const {
   GRID_W,
   GRID_H,
   CROP_TARGET_HEIGHT,
+  GRID_N,
   loadTemplates,
+  teachShapes,
+  TAUGHT_WEIGHT,
+  makeShape,
+  similarityOf,
   readTurn,
+  resizeGray,
 } = require('../src/shared/turnReader');
 
 const RAW = require('../src/shared/templates.json');
@@ -54,33 +60,105 @@ function toGrid(rows) {
 }
 
 /**
- * 이중선형 확대 — 화면(캔버스)이 크롭을 키우는 방식과 같게.
+ * 표본을 키운다 — **앱과 같은 함수**(turnReader.resizeGray)로.
  *
  * 표본은 게임에서 보이는 크기 그대로(22·32·44px)라서, 그냥 재면 **앱이 실제로
  * 인식기에 넣는 것과 다른 것을 재게 된다.** 앱은 인식 전에 CROP_TARGET_HEIGHT
- * 근처로 키운다 — 벤치도 똑같이 키워야 숫자가 실제와 맞는다.
+ * 근처로 맞춘다 — 벤치도 똑같이 키워야 숫자가 실제와 맞는다. 예전엔 여기에 따로
+ * 이중선형을 두고 앱은 캔버스로 키워서 둘이 달랐다 (오독 0.3% vs 0.6%).
+ *
+ * 벤치는 **줄이지는 않는다**(k ≤ 1 이면 그대로). 표본이 전부 작아서 줄일 일이 없다.
  */
 function upscale(gray, w, h, k) {
   if (k <= 1.01) return { gray, w, h };
-  const W = Math.round(w * k);
-  const H = Math.round(h * k);
-  const out = new Uint8Array(W * H);
-  for (let y = 0; y < H; y += 1) {
-    const sy = Math.min(h - 1.0001, (y + 0.5) / k - 0.5);
-    const y0 = Math.max(0, Math.floor(sy));
-    const y1 = Math.min(h - 1, y0 + 1);
-    const fy = sy - y0;
-    for (let x = 0; x < W; x += 1) {
-      const sx = Math.min(w - 1.0001, (x + 0.5) / k - 0.5);
-      const x0 = Math.max(0, Math.floor(sx));
-      const x1 = Math.min(w - 1, x0 + 1);
-      const fx = sx - x0;
-      const a = gray[y0 * w + x0] * (1 - fx) + gray[y0 * w + x1] * fx;
-      const b = gray[y1 * w + x0] * (1 - fx) + gray[y1 * w + x1] * fx;
-      out[y * W + x] = (a * (1 - fy) + b * fy) | 0;
+  return resizeGray(gray, w, h, k);
+}
+
+/** 이만큼 닮았으면 **같은 폰트**에서 뽑은 대조표로 본다 (다른 폰트끼리는 0.97 을 안 넘었다) */
+const SAME_FONT = 0.985;
+
+/** 행 문자열(336자 한 줄 또는 줄 배열) → 격자 */
+function gridOf(rows) {
+  const flat = Array.isArray(rows) ? rows.join('') : String(rows);
+  const grid = new Uint8Array(GRID_N);
+  for (let i = 0; i < GRID_N && i < flat.length; i += 1) grid[i] = flat[i] === '1' ? 1 : 0;
+  return grid;
+}
+
+/** 격자를 dx·dy 칸 민다 (넘치는 칸은 버린다) */
+function shiftGrid(g, dx, dy) {
+  const out = new Uint8Array(GRID_N);
+  for (let y = 0; y < GRID_H; y += 1) {
+    for (let x = 0; x < GRID_W; x += 1) {
+      const sx = x - dx;
+      const sy = y - dy;
+      if (sx >= 0 && sx < GRID_W && sy >= 0 && sy < GRID_H) out[y * GRID_W + x] = g[sy * GRID_W + sx];
     }
   }
-  return { gray: out, w: W, h: H };
+  return out;
+}
+
+const fontCache = new Map();
+
+/**
+ * **처음 보는 폰트** 조건의 대조표 — 표본을 그린 폰트에서 뽑은 것과 닮은 대조표를 뺀다.
+ * (가르친 뒤 조건은 taughtFor)
+ *
+ * @param {string} font 표본의 폰트 이름 (data.holdout 의 열쇠)
+ *
+ * ★ 예전엔 대조표 행 문자열이 **한 글자까지 똑같을 때만** 뺐다. 그런데 표본 쪽 대조표는
+ * 글자를 왼쪽·글자선에 맞춰 그리고 templates.json 은 가운데에 맞춰 그려서 행이 한 칸씩
+ * 어긋난다 — 폰트 6벌 중 5벌에서 0~1개만 빠졌다. "처음 보는 폰트"는 이름뿐이었고,
+ * "가르친 뒤"는 아무것도 안 더해서 두 줄의 결과가 늘 똑같았다. 이제 칸을 조금씩 밀어
+ * 가며 **닮음**으로 가른다 (같은 폰트 0.99~1.00, 다른 폰트는 0.97 을 안 넘었다).
+ */
+function templatesFor(font) {
+  if (fontCache.has(font)) return fontCache.get(font);
+  const data = loadFixtures();
+  const own = ((data && data.holdout && data.holdout[font]) || []).map((rows, digit) => ({ digit, grid: gridOf(rows) }));
+  // 그 폰트 글자를 ±2칸 밀어 본 모양들 — 그리는 자리가 달라도 같은 폰트면 잡힌다
+  const shifted = own.map((o) => {
+    const shapes = [];
+    for (let dx = -2; dx <= 2; dx += 1) for (let dy = -2; dy <= 2; dy += 1) shapes.push(makeShape(shiftGrid(o.grid, dx, dy)));
+    return { digit: o.digit, shapes };
+  });
+  const list = loadTemplates(RAW).filter((t) => {
+    const mine = shifted.find((o) => o.digit === t.digit);
+    return !mine || !mine.shapes.some((sh) => similarityOf(sh, t.shape, 0.5) >= SAME_FONT);
+  });
+  fontCache.set(font, list);
+  return list;
+}
+
+/**
+ * **가르친 뒤** 조건 — 사용자가 [가르치기]로 하는 일을 그대로 흉내 낸다.
+ *
+ * 처음 보는 폰트의 대조표에서 시작해, **같은 폰트·같은 크기·같은 명암**의 표본 몇 장
+ * (TEACH_VALUES — 0~9 를 다 덮는다)을 앱과 같은 함수(teachShapes)로 가르친다. 예전엔 64px 로 그린 그 폰트 글자를 넣었는데, 사용자는 **게임 화면의 크기
+ * 그대로** 가르친다 — 다른 것을 재고 있었다. 가르친 값은 채점에서 뺀다 (본 것을 맞히는
+ * 건 아무것도 말해 주지 않는다).
+ */
+const TEACH_VALUES = [0, 4, 7, 8, 9, 12, 36, 56];
+const taughtCache = new Map();
+function taughtFor(s, target) {
+  const key = `${s.font}|${s.height}|${Boolean(s.invert)}|${target}`;
+  if (taughtCache.has(key)) return taughtCache.get(key);
+  const base = templatesFor(s.font);
+  const data = loadFixtures();
+  const lessons = data.samples.filter(
+    (x) => x.font === s.font && x.height === s.height && Boolean(x.invert) === Boolean(s.invert) && TEACH_VALUES.includes(x.value),
+  );
+  const taught = [];
+  for (const x of lessons) {
+    const raw = new Uint8Array(Buffer.from(x.gray, 'base64'));
+    const img = target ? upscale(raw, x.w, x.h, Math.max(1, Math.min(8, target / x.height))) : { gray: raw, w: x.w, h: x.h };
+    // 앱과 **같은 함수**로 가르친다 (engine.teachFrom → teachShapes)
+    const got = teachShapes(img.gray, img.w, img.h, base, String(x.value));
+    if (got.ok) taught.push(...got.templates);
+  }
+  const list = [...base, ...loadTemplates({ templates: taught }, { weight: TAUGHT_WEIGHT })];
+  taughtCache.set(key, list);
+  return list;
 }
 
 /** 숫자별 템플릿 묶음 */
@@ -96,9 +174,11 @@ function byDigit() {
 /**
  * 성능을 잰다.
  *
- * @param {{holdout?: boolean, read?: object, target?: number, maxTurn?: number,
+ * @param {{taught?: boolean, withoutTaught?: boolean, read?: object, target?: number, maxTurn?: number,
  *          fonts?: string[], heights?: number[], verbose?: boolean}} [opts]
- *   holdout 표본을 그린 폰트의 대조표를 빼고 맞춘다 (기본 true = 처음 보는 폰트 조건)
+ *   taught  그 폰트를 **가르친 뒤** 조건 (taughtFor 참고). 기본은 처음 보는 폰트 조건 —
+ *           표본을 그린 폰트의 대조표를 빼고 맞춘다 (templatesFor 참고)
+ *   withoutTaught 가르친 조건과 같은 표본으로 견주려고, 가르칠 때 쓴 값을 뺀다
  *   target  앱처럼 이 높이 근처로 키워서 읽는다 (0이면 원본 크기 그대로)
  *   maxTurn 최대 턴을 이미 아는 조건에서 잰다 — 그보다 큰 표본은 빼고,
  *           readTurn 에도 같이 넘긴다. `read: { maxTurn: 0 }` 으로 같은 표본에서
@@ -110,27 +190,20 @@ function bench(opts = {}) {
   const data = loadFixtures();
   if (!data) return null;
 
-  const holdout = opts.holdout !== false;
+  const taught = Boolean(opts.taught);
   const target = opts.target === undefined ? CROP_TARGET_HEIGHT : opts.target;
+  // 가르친 조건과 견줄 때는 **같은 표본**이어야 한다 — 가르친 값은 둘 다에서 뺀다
+  const skipTaught = taught || opts.withoutTaught;
   const samples = data.samples.filter(
     (s) =>
       (!opts.heights || opts.heights.includes(s.height)) &&
       (!opts.fonts || opts.fonts.includes(s.font)) &&
-      (!opts.maxTurn || s.value <= opts.maxTurn),
+      (!opts.maxTurn || s.value <= opts.maxTurn) &&
+      !(skipTaught && TEACH_VALUES.includes(s.value)),
   );
   const read = { maxTurn: opts.maxTurn || null, ...(opts.read || {}) };
 
-  // 폰트마다 대조표를 한 번만 만든다 (표본마다 만들면 몇 분씩 걸린다)
-  const byFont = new Map();
-  const templatesFor = (font) => {
-    if (byFont.has(font)) return byFont.get(font);
-    const drop = new Set(holdout ? data.holdout[font] || [] : []);
-    const list = loadTemplates({
-      templates: RAW.templates.filter((t) => !drop.has(t.rows.join(''))),
-    });
-    byFont.set(font, list);
-    return list;
-  };
+  const tpl = (s) => (taught ? taughtFor(s, target) : templatesFor(s.font));
 
   let ok = 0;
   let unknown = 0;
@@ -149,7 +222,7 @@ function bench(opts = {}) {
       target ? Math.max(1, Math.min(8, target / s0.height)) : 1,
     );
     for (let i = 0; i < 20; i += 1) {
-      readTurn(warm.gray, warm.w, warm.h, templatesFor(s0.font), read);
+      readTurn(warm.gray, warm.w, warm.h, tpl(s0), read);
     }
   }
 
@@ -157,7 +230,7 @@ function bench(opts = {}) {
     const raw = new Uint8Array(Buffer.from(s.gray, 'base64'));
     const img = target ? upscale(raw, s.w, s.h, Math.max(1, Math.min(8, target / s.height))) : { gray: raw, w: s.w, h: s.h };
     const started = process.hrtime.bigint();
-    const got = readTurn(img.gray, img.w, img.h, templatesFor(s.font), read);
+    const got = readTurn(img.gray, img.w, img.h, tpl(s), read);
     times.push(Number(process.hrtime.bigint() - started) / 1e6);
     const where = `${s.font} ${s.height}px${s.invert ? ' 반전' : ''}`;
     if (!got) {
@@ -199,7 +272,7 @@ function report(title, r, { showMisses = false } = {}) {
   if (r.misses.length > 30) console.log(`    … 외 ${r.misses.length - 30}건`);
 }
 
-module.exports = { toGrid, byDigit, upscale, bench, loadFixtures, report, RAW };
+module.exports = { toGrid, byDigit, upscale, bench, loadFixtures, report, templatesFor, taughtFor, TEACH_VALUES, RAW };
 
 if (require.main === module) {
   const verbose = process.argv.includes('--verbose');
@@ -207,7 +280,9 @@ if (require.main === module) {
     showMisses: verbose,
   });
   console.log();
-  report('가르친 뒤 (그 폰트를 아는 조건)', bench({ holdout: false }), {
+  // 가르친 조건은 가르칠 때 쓴 값을 빼고 잰다 — 견주는 줄도 같은 표본으로
+  report('참고 — 처음 보는 폰트, 가르칠 값 뺀 표본', bench({ withoutTaught: true }));
+  report('가르친 뒤 (같은 표본)', bench({ taught: true, verbose }), {
     showMisses: verbose,
   });
   console.log();

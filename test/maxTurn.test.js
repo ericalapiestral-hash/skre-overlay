@@ -92,6 +92,19 @@ test('한 번 읽히면 못 읽은 셈이 다시 시작된다', () => {
   assert.strictEqual(w.known, 70, '연출로 띄엄띄엄 가려지는 것과 막다른 골목은 다르다');
 });
 
+test('막다른 골목에서 한 자리 오독이 새어 들어와도 잊는다', () => {
+  // ★ 70을 7로 잘못 믿으면 두 자리 값은 다 걸러지지만, 글자 구멍을 읽은 "3"(최대 턴 없음)
+  // 같은 한 자리 오독은 통과한다. 예전엔 그게 "읽혔다"로 쳐져 못 읽은 셈이 되돌려졌고,
+  // 열 프레임에 하나만 섞여도 잊기에 영영 못 닿았다.
+  const w = createMaxTurnWatch();
+  feed(w, [strong(7), strong(7), strong(7)]);
+  for (let i = 0; i < 4; i += 1) {
+    for (let k = 0; k < 4; k += 1) w.see(null);
+    w.see({ max: null, maxConfidence: 0 });
+  }
+  assert.strictEqual(w.known, null, '믿는 값을 한 번도 다시 못 봤는데 계속 믿고 있다');
+});
+
 test('슬래시가 없으면 검증이 통째로 꺼진다', () => {
   // 사용자가 영역을 숫자에만 딱 맞춰 잡았을 때 — 예전처럼 쓰던 사람에게 달라지는 게 없어야 한다
   const w = createMaxTurnWatch();

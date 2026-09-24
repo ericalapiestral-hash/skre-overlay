@@ -9,7 +9,7 @@
 // 시나리오는 test/scenarios/ 에 있다.
 'use strict';
 
-const { readTurn, loadTemplates, gridToRows } = require('../shared/turnReader');
+const { readTurn, loadTemplates, teachShapes, TAUGHT_WEIGHT } = require('../shared/turnReader');
 const { createFollower } = require('../shared/follower');
 const { createMaxTurnWatch } = require('../shared/maxTurn');
 const { createBattleEndWatch } = require('../shared/battleEnd');
@@ -49,7 +49,7 @@ function createEngine(options = {}) {
   /** 기본 대조표 + 사용자가 가르친 대조표 */
   function setTemplates(builtin, userJson) {
     const extra = userJson && userJson.length
-      ? loadTemplates({ templates: userJson }, { weight: 1.12 })
+      ? loadTemplates({ templates: userJson }, { weight: TAUGHT_WEIGHT })
       : [];
     active = [...builtin, ...extra];
     return active.length;
@@ -78,14 +78,7 @@ function createEngine(options = {}) {
 
   /**
    * 숫자 가르치기 — 지금 보이는 크롭에서 사람이 말해 준 값의 모양을 뽑아낸다.
-   *
-   * **인식기와 같은 길로 자른다.** 예전엔 여기서 따로 digitBoxes 를 불렀는데, 그러면
-   * 슬래시가 옆 숫자에 붙은 경우("/7")나 두 글자가 한 덩어리로 잡힌 경우를 못 풀어서
-   * "숫자를 못 찾았어요"만 나왔다 — **가르치려는 상황이 바로 그 상황인데도.**
-   * readTurn 은 그걸 전부 다루고 이긴 명암의 모양까지 돌려준다 (collect).
-   *
-   * 점수 문턱은 0으로 낮춘다. 못 읽는 폰트를 가르치려는 참인데 "확신이 없다"고
-   * 거절하면 앞뒤가 안 맞는다 — 정답은 사람이 말해 주고 있다.
+   * 인식기와 같은 길로 자르고, 자릿수는 사람이 말해 준 대로 찾는다 (turnReader.teachShapes).
    *
    * @param {Uint8Array} gray
    * @param {string} text 사람이 적은 값 ("16")
@@ -93,18 +86,7 @@ function createEngine(options = {}) {
    *          |{ok: false, found: number, want: number}}
    */
   function teachFrom(gray, w, h, text) {
-    const want = text.length;
-    const got = readTurn(gray, w, h, active, {
-      collect: true,
-      minScore: 0,
-      minMargin: 0,
-    });
-    const shapes = got && got.shapes ? got.shapes : [];
-    if (shapes.length !== want) return { ok: false, found: shapes.length, want };
-    return {
-      ok: true,
-      templates: shapes.map((grid, i) => ({ d: Number(text[i]), rows: gridToRows(grid) })),
-    };
+    return teachShapes(gray, w, h, active, text);
   }
 
   /** 손으로 단계를 옮겼을 때 */

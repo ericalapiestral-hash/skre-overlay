@@ -11,7 +11,8 @@
 //    경쟁자가 없어 마진이 커서 이겼고, 그래서 7 하나로 읽혔다.
 //  · **붙어 버린 숫자를 나눈다.** 나눌지 말지는 어림짐작이 아니라 인식 점수로 정한다.
 //  · **구멍의 위치까지 본다.** 개수만 보면 6(아래)·9(위)·0(가운데)를 못 가른다.
-//  · **점수표를 그대로 내보낸다.** 빌드가 아는 턴(후보)으로 애매한 자리를 맞출 수 있게.
+//  · **"16 / 70" 의 슬래시로 좌우를 가르고, 오른쪽(최대 턴)도 읽는다** — 검증에 쓴다.
+//  · 빌드 턴을 후보로 맞추던 기능은 **걷어냈다** (bestValue 의 설명 참고).
 //
 // 속도를 위해 고친 것 — 게임과 CPU를 나눠 쓰는 도구라 프레임당 비용이 곧 프레임 간격이다:
 //  · **격자를 비트로 다룬다.** 336칸을 32비트 낱말 11개에 담아, 겹치는 칸 세기를
@@ -28,17 +29,20 @@
 'use strict';
 
 /**
- * 잘라 온 턴 영역을 이 높이(px) 근처로 키워서 읽는다.
+ * 잘라 온 턴 영역을 이 높이(px) 근처로 맞춰서 읽는다 (fitCrop).
  *
- * 크게 키울수록 좋을 것 같지만 아니다. 실제 폰트 792장으로 재 보면
- *   확대 안 함  맞음 98.9% · 틀림 0.8%
- *   48px       맞음 99.4% · 틀림 0.6%
- *   **64px       맞음 99.7% · 틀림 0.3%**   ← 여기가 제일 좋다
- *   96px       맞음 99.2% · 틀림 0.8%   (게다가 1.75배 느리다)
- * 너무 키우면 부드럽게 늘어나는 과정에서 옆 숫자와 획이 붙어 자릿수를 잃는다.
+ * 크게 키울수록 좋을 것 같지만 아니다. 실제 폰트 792장·"N / M" 1008장으로 재 보면
+ * (처음 보는 폰트 맞음/모르겠음/틀림 · 한 장 시간 · N/M 에서 최대 턴을 읽은 수):
+ *   확대 안 함  770/6/16 · 0.25ms · 최대 턴 999
+ *   48px       792/0/0  · 0.33ms · 최대 턴 972
+ *   **64px       792/0/0  · 0.48ms · 최대 턴 1002**   ← 둘 다 되는 가장 작은 값
+ *   96px       791/1/0  · 0.79ms · 최대 턴 1008
+ * 지금 턴만 보면 48도 되지만, 검증에 쓰는 **최대 턴**을 덜 읽는다. 너무 키우면 늘어나는
+ * 과정에서 옆 숫자와 획이 붙어 자릿수를 잃고, 느리다.
+ * (예전 표는 64 가 지금 턴에서도 제일 좋다고 적었는데, 인식기가 바뀐 뒤로 다시 안 쟀었다.)
  *
- * 화면(캡처)과 벤치가 같은 값을 써야 재는 것과 실제가 어긋나지 않는다 —
- * 그래서 여기 한 곳에만 둔다.
+ * 메인(fitCrop)과 벤치가 같은 값을 써야 재는 것과 실제가 어긋나지 않는다 —
+ * 그래서 여기 한 곳에만 둔다. 화면(렌더러)은 이 값을 모른다 — 원본 크기로 잘라 넘긴다.
  */
 const CROP_TARGET_HEIGHT = 64;
 
@@ -48,6 +52,68 @@ const GRID_H = 24;
 const GRID_N = GRID_W * GRID_H;
 /** 격자 한 장을 담는 32비트 낱말 수 */
 const WORDS = Math.ceil(GRID_N / 32);
+
+// ─────────────────────────────── 크기 맞추기 (크롭 → CROP_TARGET_HEIGHT)
+
+/**
+ * 회색조 그림의 크기를 k배로 바꾼다. 키울 때는 이중선형, 줄일 때는 넓이 평균.
+ *
+ * ★ **화면(캔버스)이 아니라 여기서 한다.** 예전엔 렌더러가 캔버스
+ * `imageSmoothingQuality='high'` 로 키웠고 벤치는 이중선형으로 키워서, 벤치가 재는
+ * 그림과 앱이 읽는 그림이 달랐다 — 앱처럼 키우면 오독이 0.3% → 0.6% 였다 (이 프로젝트가
+ * 되풀이해 온 "앱과 다른 것을 재기"). 게다가 캔버스의 'high' 는 브라우저·GPU 마다
+ * 구현이 달라서 윈도우에서 어떻게 키워지는지 여기서 알 길이 없었다. 이제 화면은
+ * 원본 크기로 잘라 넘기고, **메인과 벤치가 이 함수 하나를 같이 쓴다.**
+ */
+function resizeGray(gray, w, h, k) {
+  if (Math.abs(k - 1) <= 0.01) return { gray, w, h };
+  const W = Math.max(1, Math.round(w * k));
+  const H = Math.max(1, Math.round(h * k));
+  const out = new Uint8Array(W * H);
+  if (k > 1) {
+    for (let y = 0; y < H; y += 1) {
+      const sy = Math.min(h - 1.0001, (y + 0.5) / k - 0.5);
+      const y0 = Math.max(0, Math.floor(sy));
+      const y1 = Math.min(h - 1, y0 + 1);
+      const fy = sy - y0;
+      for (let x = 0; x < W; x += 1) {
+        const sx = Math.min(w - 1.0001, (x + 0.5) / k - 0.5);
+        const x0 = Math.max(0, Math.floor(sx));
+        const x1 = Math.min(w - 1, x0 + 1);
+        const fx = sx - x0;
+        const a = gray[y0 * w + x0] * (1 - fx) + gray[y0 * w + x1] * fx;
+        const b = gray[y1 * w + x0] * (1 - fx) + gray[y1 * w + x1] * fx;
+        out[y * W + x] = (a * (1 - fy) + b * fy) | 0;
+      }
+    }
+    return { gray: out, w: W, h: H };
+  }
+  // 줄일 때 이중선형을 쓰면 건너뛴 픽셀의 획이 통째로 사라진다 — 덮는 칸을 다 평균한다
+  for (let y = 0; y < H; y += 1) {
+    const y0 = Math.floor((y * h) / H);
+    const y1 = Math.max(y0 + 1, Math.floor(((y + 1) * h) / H));
+    for (let x = 0; x < W; x += 1) {
+      const x0 = Math.floor((x * w) / W);
+      const x1 = Math.max(x0 + 1, Math.floor(((x + 1) * w) / W));
+      let sum = 0;
+      for (let yy = y0; yy < y1; yy += 1) for (let xx = x0; xx < x1; xx += 1) sum += gray[yy * w + xx];
+      out[y * W + x] = (sum / ((y1 - y0) * (x1 - x0))) | 0;
+    }
+  }
+  return { gray: out, w: W, h: H };
+}
+
+/**
+ * 잘라 온 턴 영역을 인식기가 읽는 높이(CROP_TARGET_HEIGHT)로 맞춘다 — 앱이 쓰는 길.
+ *
+ * **크면 줄인다.** 예전엔 키우기만 해서(max(1, …)) 4K 에서는 크롭(높이 93)을 원본 그대로
+ * 읽었다. 문턱은 전부 64 근처로 맞춘 그림에서 쟀는데 4K 만 그 조건 밖이었고, 흉내 내 보면
+ * 거기서만 오독이 났다 (720장 중 9장). 64로 줄이면 0이다. 어느 해상도든 같은 조건이 된다.
+ */
+function fitCrop(gray, w, h) {
+  if (!gray || w <= 0 || h <= 0) return { gray, w, h };
+  return resizeGray(gray, w, h, Math.min(8, CROP_TARGET_HEIGHT / h));
+}
 
 // ─────────────────────────────── 이진화
 
@@ -251,7 +317,7 @@ function looksLikeDigit(c, imageH, maxDigits = 3) {
 }
 
 /**
- * 슬래시를 가리는 값 — `tools/measure-slash.js` 로 **재서** 골랐다.
+ * 슬래시를 가리는 값.
  *
  * 게임의 턴 표시는 그냥 숫자가 아니라 **"16 / 70"** (지금 턴 / 최대 턴)이다.
  * 오른쪽 70까지 같이 읽으면 "1670"이 되므로 슬래시를 찾아 왼쪽만 남겨야 한다.
@@ -259,9 +325,11 @@ function looksLikeDigit(c, imageH, maxDigits = 3) {
  * 값은 `tools/tune-slash.js`가 **앱과 같은 조건에서**(크롭을 64px로 키운 뒤) 재서 골랐다.
  * 원본 크기의 낱글자로 재서 고른 값을 넣었더니 오독이 일곱 배로 늘었다 — 확대하면
  * 획이 번져 ratio도 fill도 달라진다. bench가 예전에 저지른 것과 똑같은 실수다.
- * **원본 크기로 재는 쪽으로 되돌리지 말 것.**
+ * **원본 크기로 재는 쪽으로 되돌리지 말 것.** (`tools/measure-slash.js` 가 그 원본 크기
+ * 도구다 — 무엇을 재는지 처음 알아볼 때 쓴 것이라 문턱을 고르는 데 쓰지 말 것.)
  *
- * 앱 조건에서는 **diag가 완전히 가른다**: 숫자는 −0.15~**0.23**, 슬래시는 **0.38**~0.61.
+ * 앱 조건에서는 **diag가 완전히 가른다**: 숫자(글자가 앞으로 잡히는 명암)는 −0.15~**0.23**,
+ * 슬래시는 **0.38**~0.61.
  * 그 틈(0.15)의 가운데가 0.31이다. ratio·fill은 갈라 주지는 않지만(둘 다 겹친다)
  * 처음 보는 폰트에서 엉뚱한 덩어리가 diag만 높게 나오는 것을 막는 울타리로 같이 둔다.
  *
@@ -270,7 +338,11 @@ function looksLikeDigit(c, imageH, maxDigits = 3) {
  *    턴을 반쪽만 읽는다. 슬래시를 못 알아보는 건 예전 상태로 돌아갈 뿐이라 덜 나쁘다.
  *  · **양쪽 여유의 작은 쪽**을 키울 것. 한쪽만 넉넉한 값은 반대쪽으로 뚫린다.
  *
- * 지금 값: 숫자 덩어리 1470개 중 오검출 0, 슬래시 100% 포착, 양쪽 여유 0.07대.
+ * 지금 값: 숫자 덩어리 1468개 중 오검출 0, 슬래시 100% 포착, 양쪽 여유 0.07대.
+ * **뒤집힌 명암의 덩어리(글자 구멍)** 1742개 중 35개는 넘는다 — "4"의 삼각 구멍이 슬래시처럼
+ * 생겼다. 그 명암은 자릿수 싸움에서 지고, readTurn 의 "가려진 지금 턴" 가드가 높이로
+ * 거른다. 0으로 맞추려 들면 여유가 0.02 로 쪼그라든다. (예전 측정 도구는 버그로 한쪽
+ * 명암만 재서 이걸 몰랐다 — tools/tune-slash.js 의 measureSample 설명 참고.)
  * 만질 일이 생기면 `node tools/tune-slash.js`로 **다시 재서** 정할 것.
  */
 const SLASH = { maxRatio: 0.64, maxFill: 0.6, minDiag: 0.31 };
@@ -472,12 +544,8 @@ function pickLine(lines, maxDigits) {
  * 자릿수를 넘치면 가로로 이어진 구간 중 가장 큰 덩어리들을 남긴다 (끝에 붙은 잡티 제거).
  */
 function digitBoxes(comps, imageH, maxDigits = 3, opts = {}) {
-  const { imgW = 0, out = null, keepLine = false } = opts;
-  if (out) {
-    out.lineCount = 0;
-    out.ambiguous = false;
-    out.merged = false;
-  }
+  const { out = null, keepLine = false } = opts;
+  if (out) out.lineCount = 0;
   const usable = comps.filter((c) => looksLikeDigit(c, imageH, maxDigits));
   if (usable.length === 0) return [];
 
@@ -488,45 +556,18 @@ function digitBoxes(comps, imageH, maxDigits = 3, opts = {}) {
   let line = pickLine(textLines(usable), lineLimit);
   line.sort((a, b) => a.minX - b.minX);
   // 자르기 **전** 글자 수 — 어느 명암이 글자를 더 잘 갈랐는지 재는 값이다 (readTurn 참고)
-  if (out) {
-    out.lineCount = line.length;
-    // 두 글자가 붙은 덩어리가 있나 — 슬래시가 옆 숫자에 붙었을 수 있다는 신호다
-    out.merged = imgW > 0 && line.some((c) => c.w / c.h > MERGED_RATIO);
+  if (out) out.lineCount = line.length;
 
-  }
-
-  // 줄을 통째로 달라고 했으면 여기서 끝 — 자르기도 자릿수 맞추기도 부르는 쪽이 한다
+  // 줄을 통째로 달라고 했으면 여기서 끝 — 슬래시로 가르기도 자릿수 맞추기도 부르는 쪽
+  // (readTurn)이 **붙은 덩어리를 나눈 뒤에** 한다. 여기서는 "/7" 처럼 슬래시가 옆 숫자에
+  // 붙은 경우를 못 보기 때문이다.
+  //
+  // (예전엔 여기에도 슬래시 자르기와 "붙은 덩어리가 있으면 못 읽겠다고 알리기"가 있었는데,
+  // readTurn 은 늘 keepLine 으로 불러서 그 길은 한 번도 안 돌았다. 문서는 "슬래시를 두 번
+  // 찾는다"고 적고 있었다 — 지웠다. 슬래시는 readTurn 에서 한 번 찾는다.)
   if (keepLine) return line.slice(0, lineLimit);
 
-  // ★ "16 / 70" 에서 슬래시 앞까지만 남긴다 — 오른쪽은 최대 턴이라 우리가 읽을 것이 아니다.
-  //
-  // 자릿수 제한(maxDigits)에 맡기면 안 된다. 그건 "면적 합이 제일 큰 연속 구간"을
-  // 고르는 것이라 "16/70"에서 엉뚱하게 "6/7"이나 "/70"을 집는다. 슬래시를 실제로
-  // 찾아서 거기서 끊어야 한다. 슬래시가 안 보이면(사용자가 영역을 숫자에만 딱 맞춰
-  // 잡았으면) 아무것도 안 하므로, 예전처럼 쓰던 사람에게도 달라지는 게 없다.
-  if (imgW > 0) {
-    const at = line.findIndex((c) => looksLikeSlash(c, imgW));
-    // 맨 앞이 슬래시로 보이면 자르지 않는다 — 남는 게 없으니 오검출일 가능성이 크다
-    if (at > 0) line = line.slice(0, at);
-  }
-
   if (line.length <= maxDigits) return line;
-
-  // ★ 자릿수를 넘치는데 슬래시도 못 찾았고, 두 글자가 붙은 덩어리까지 있으면 **읽지 않는다.**
-  //
-  // "12/70"에서 슬래시가 7에 붙어 한 덩어리가 되면(작은 글자에서 실제로 생긴다) 아래
-  // 면적 규칙이 "2/7 0" 같은 엉뚱한 구간을 골라 **자신 있게 틀린 턴**을 내놓는다.
-  // 틀린 턴을 믿고 단계를 건너뛰면 순서가 통째로 어긋나서, 아예 못 읽고 가만히 있느니만
-  // 못하다 (CLAUDE.md). 이 조건은 좁다 — 붙은 덩어리가 없으면(끝에 잡티가 붙은 흔한
-  // 경우) 예전처럼 면적 규칙으로 간다.
-  //
-  // 여기서 그냥 빈 손으로 돌아가면 **반대쪽 명암이 그대로 이긴다.** 뒤집힌 쪽에서는
-  // 글자 구멍 두어 개가 잡히는데, 그게 유일한 후보가 되어 "12/70"이 "1"로 읽혔다.
-  // 그래서 "못 읽겠다"를 밖으로 알려서 프레임 전체를 물리게 한다 (readTurn 참고).
-  if (out && out.merged) {
-    out.ambiguous = true;
-    return [];
-  }
 
   // 연속한 maxDigits개 중 면적 합이 가장 큰 구간
   let bestAt = 0;
@@ -983,15 +1024,6 @@ function scoreGrid(grid, templates, params = MATCH) {
 }
 
 /**
- * 자리마다의 점수표에서 실제 숫자를 고른다.
- *
- * @param {number[][]} scores 자리별 0~9 점수
- * @param {{minScore?: number, minMargin?: number, strictMargin?: number,
- *          }} opts
- *   strictMargin 후보에 없는 숫자를 그래도 믿어 주려면 필요한 차이 (기본 minMargin×3)
- * @returns {{value:number, digits:number[], confidence:number, margin:number}|null}
- */
-/**
  * 자리마다의 점수표에서 값 하나를 고른다. 확신이 모자라면 **아무것도 안 고른다.**
  *
  * ★ **빌드에 나오는 턴을 "후보"로 써서 맞추던 기능은 걷어냈다. 되살리지 말 것.**
@@ -1010,13 +1042,23 @@ function scoreGrid(grid, templates, params = MATCH) {
  * 예전 벤치가 이걸 못 잡은 이유: **표본의 정답을 전부 후보로 넣고 쟀다.** 그러면
  * "빌드 턴이 아닌 턴"을 읽는 상황이 한 번도 시험되지 않는다 — 앱이 겪는 것과 다른
  * 것을 잰 것이다. 벤치가 예전에 저지른 실수(원본 크기로 재기)와 같은 종류다.
+ *
+ * @param {number[][]} scores 자리별 0~9 점수
+ * @param {{minScore?: number, minMargin?: number}} [opts]
+ * @returns {{value:number, digits:number[], confidence:number, margin:number}|null}
  */
 function bestValue(scores, opts = {}) {
-  // 문턱값은 재서 골랐다 (tools/bench-reader.js · tools/tune-reader.js).
-  // 표본 792장에서 맞음 99.7% · 틀림 0.3%.
-  // 더 올리면 "모르겠음"만 급격히 늘고 틀림은 거의 안 줄어든다.
+  // 문턱값은 재서 골랐다 (tools/tune-reader.js — 앱 조건 줄들을 함께 본다).
+  //
+  // minMargin 0.04 → 0.05: 인식기가 여러 번 바뀌는 동안(슬래시·자릿수 싸움·가드) 계수를
+  // 다시 안 재서 "더 올리면 모르겠음만 는다"는 옛 설명이 남아 있었는데, 지금 재 보면
+  // 반대다. 0.05 에서 **앱 조건 줄이 전부 틀림 0 · 모르겠음 0**이 된다 — 처음 보는 폰트
+  // 790/0/2 → 792/0/0 (마지막 오독 "8 → 551" 두 장), 최대 턴 모를 때 718/0/2 → 720/0/0,
+  // 최대 턴 앎 720, 가르친 뒤 504, "N / M" 1008 은 그대로. 0.06 은 최대 턴 읽기가 줄었다
+  // (1002 → 999). 참고 줄(확대 없이)은 774/0/18 → 770/6/16 — 틀림이 준 만큼 모르겠음이 는다.
+  // ⚠ 전부 우리가 고른 폰트로 그린 표본이다. 게임 폰트 기록을 받으면 다시 잴 것.
   const minScore = opts.minScore ?? 0.7;
-  const minMargin = opts.minMargin ?? 0.04;
+  const minMargin = opts.minMargin ?? 0.05;
   if (!scores || scores.length === 0) return null;
 
   const digits = [];
@@ -1098,6 +1140,24 @@ function expandBox(box, w, templates, maxDigits, params = MATCH) {
 }
 
 /**
+ * "가려진 지금 턴" 가드의 높이 비 (readTurn 끝 참고) — 슬래시를 본 명암의 글자 높이가
+ * 이긴 명암의 이만큼 이상이면 이긴 쪽을 "구멍을 읽었다"로 본다.
+ *
+ * 높이 조건만 따로 재서 골랐다 (bench 792장 · 슬래시 왼쪽을 가린 pairs 958장 × 가림 넷):
+ *  · 0.2 이하면 숫자만 있는 표본 3장이 "모르겠음"이 된다 — 뒤집힌 명암에서 "4"의 삼각
+ *    구멍이 슬래시로 보여서다 (그 쪽 글자는 구멍이라 이긴 쪽의 0.3배 안팎으로 작다).
+ *  · 1.2 부터 가림 오답이 새기 시작한다 (흰색 가림 0 → 2.1%). 1.7 이면 가드가 없는 것과 같다.
+ * 그 틈의 가운데를 잡았다. 가드의 다른 조건("/ M" 이 읽힘)과 **둘 중 하나**만 맞으면 된다.
+ */
+const GUARD_K = 0.7;
+/** 덩어리 높이의 가운데값 (없으면 0) */
+function medianHeight(boxes) {
+  if (boxes.length === 0) return 0;
+  const hs = boxes.map((b) => b.h).sort((a, b) => a - b);
+  return hs[hs.length >> 1];
+}
+
+/**
  * @typedef {{value: number, confidence: number, margin: number, digits: number[],
  *            max: number|null, maxConfidence: number, shapes?: Uint8Array[],
  *            bright: boolean, threshold: number, boxes: number, segs: number}} Reading
@@ -1108,7 +1168,7 @@ function expandBox(box, w, templates, maxDigits, params = MATCH) {
 /**
  * 잘라 온 턴 숫자 영역에서 `16 / 70` 을 읽는다 — 지금 턴과 최대 턴 둘 다.
  *
- * 이진화 문턱값 셋 × 명암 방향 둘 = 여섯 번 읽어 보고 제일 잘 읽힌 것을 쓴다.
+ * 명암 방향 둘 다 읽어 보고 제일 잘 읽힌 것을 쓴다 (문턱값은 한 번 — THRESHOLD_OFFSETS).
  * 예전엔 "화면에서 적은 쪽이 글자"라고 한 번만 단정해서, 영역에 밝은 패널이
  * 조금만 걸쳐도 통째로 뒤집혀 아무것도 못 읽었다.
  *
@@ -1119,10 +1179,11 @@ function expandBox(box, w, templates, maxDigits, params = MATCH) {
  *
  * @param {Uint8Array} gray 회색조 픽셀 (길이 w*h)
  * @param {{minScore?:number, minMargin?:number, maxDigits?:number, maxTurn?:number|null,
- *          collect?:boolean, match?:object, thresholdOffsets?:number[]}} [opts]
+ *          collect?:boolean, wantDigits?:number, match?:object, thresholdOffsets?:number[]}} [opts]
  *   maxTurn 최대 턴을 이미 안다면 — 지금 턴의 자릿수와 상한이 정해진다
- *   collect 이긴 명암에서 낱글자 모양(14×24 격자)도 같이 돌려준다 — 게임 폰트를
- *           스스로 배우는 데 쓴다 (shared/learner.js). 이긴 것 하나만 다시 계산한다
+ *   collect 이긴 명암에서 낱글자 모양(14×24 격자)도 같이 돌려준다 — [가르치기]가 쓴다
+ *           (teachShapes). 이긴 것 하나만 다시 계산한다
+ *   wantDigits 자릿수를 **사람이 알려 줬을 때** — 그 수만큼 찾은 명암만 본다 (teachShapes)
  * @returns {Reading|null}
  */
 function readTurn(gray, w, h, templates, opts = {}) {
@@ -1153,6 +1214,18 @@ function readTurn(gray, w, h, templates, opts = {}) {
   let best = null;
   /** 이긴 명암의 왼쪽 덩어리들 — collect 일 때 모양을 뽑으려고 들고 있는다 */
   let bestLeft = null;
+  /** 이긴 명암이 슬래시를 찾았나 */
+  let bestSlash = false;
+  /**
+   * 슬래시를 찾은 명암이 본 글자 수의 최댓값 (그 명암이 기권했어도 센다).
+   * 아래 "가려진 지금 턴" 가드가 쓴다.
+   */
+  let slashSegs = 0;
+  /** 그 가운데 슬래시 오른쪽(최대 턴)까지 숫자로 읽힌 명암의 글자 수 */
+  let slashRead = 0;
+  /** 그 명암이 본 글자(슬래시 뺀) 높이의 가운데값 — 가드가 "구멍을 읽었나"를 가른다 */
+  let slashH = 0;
+  let bestH = 0;
   for (const threshold of thresholds) {
     for (const bright of [true, false]) {
       const seg = {};
@@ -1160,7 +1233,7 @@ function readTurn(gray, w, h, templates, opts = {}) {
         components(binarize(gray, w, h, bright, threshold), w, h),
         h,
         maxDigits,
-        { imgW: w, out: seg, keepLine: true },
+        { out: seg, keepLine: true },
       );
       if (line.length === 0) continue;
 
@@ -1175,10 +1248,20 @@ function readTurn(gray, w, h, templates, opts = {}) {
 
       // ★ 슬래시로 **좌우를 가른다.** 왼쪽이 지금 턴, 오른쪽이 최대 턴이다.
       //
-      // 슬래시는 두 번 찾을 기회가 있다: 덩어리 단계(digitBoxes)와 여기 나눈 뒤.
-      // 작은 글자에서는 슬래시가 옆 숫자에 붙어("/7") 덩어리 단계에서는 안 보이고
-      // 나눠 놓고서야 보이므로, 여기서 한 번 더 본다.
+      // 슬래시는 **붙은 덩어리를 나눈 뒤에** 찾는다 (한 번). 작은 글자에서는 슬래시가
+      // 옆 숫자에 붙어("/7") 덩어리 그대로는 안 보이고 나눠 놓고서야 보인다.
       const at = boxes.findIndex((b) => looksLikeSlash(b, w));
+      if (at >= 0) {
+        const segs = seg.lineCount || 0;
+        slashSegs = Math.max(slashSegs, segs);
+        slashH = Math.max(slashH, medianHeight(boxes.filter((_, i) => i !== at)));
+        // 슬래시 오른쪽(최대 턴)까지 숫자로 읽히면 그건 진짜 "/ M" 이다
+        const rs = scores.slice(at + 1);
+        if (rs.length > 0 && rs.length <= maxDigits && bestValue(rs, opts)) slashRead = Math.max(slashRead, segs);
+      }
+      // 슬래시가 **맨 앞**이면 지금 턴이 가려진 것이다 — 이 명암은 읽을 것이 없다.
+      // 예전엔 여기서 오른쪽 숫자를 지금 턴("/70" → 170)과 최대 턴(70)에 동시에 넣었다.
+      if (at === 0) continue;
       const leftEnd = at > 0 ? at : boxes.length;
       const left = scores.slice(0, leftEnd);
       const right = at >= 0 ? scores.slice(at + 1) : [];
@@ -1187,6 +1270,7 @@ function readTurn(gray, w, h, templates, opts = {}) {
       // 자신 있게 틀린다 (자릿수를 넘겼는데 붙은 덩어리까지 있는 경우)
       const stuck = boxes.slice(0, leftEnd).some((b) => b.w / b.h > MERGED_RATIO);
       if (left.length === 0 || left.length > leftDigits || (stuck && left.length > 1)) continue;
+      if (opts.wantDigits && left.length !== opts.wantDigits) continue;
 
       const cur = bestValue(left, opts);
       if (!cur) continue;
@@ -1218,7 +1302,7 @@ function readTurn(gray, w, h, templates, opts = {}) {
       // 글자 구멍 두 개한테 진다 — 실제로 "0/70"이 "33"으로 읽혔다.
       //
       // 크기나 포함 관계로 가르려 하지 말 것 — 두 번 해 보고 두 번 다 오독이
-      // 0.3%에서 14.4%로 뛰었다 (위 `inside` 자리의 설명 참고).
+      // 0.3%에서 14.4%로 뛰었다 (MERGED_RATIO 아래 주석 참고).
       const better =
         !best ||
         ranked.segs > best.segs ||
@@ -1231,16 +1315,96 @@ function readTurn(gray, w, h, templates, opts = {}) {
       if (better) {
         best = ranked;
         bestLeft = opts.collect ? boxes.slice(0, leftEnd) : null;
+        bestSlash = at >= 0;
+        bestH = medianHeight(boxes.slice(0, leftEnd));
       }
     }
   }
-  // 모양은 **이긴 것 하나만** 뽑는다 — 여섯 번 다 뽑으면 공짜가 아니다
+
+  // ★ **가려진 지금 턴** — 슬래시까지 본 명암이 기권했는데 슬래시도 못 본 명암이 이겼으면
+  // 그 결과는 믿지 않는다.
+  //
+  // 스킬 연출이 지금 턴만 가리고 "/ 70"은 남으면, 글자를 제대로 본 명암은 슬래시를
+  // 찾고도(맨 앞이거나 왼쪽이 흐려서) 기권한다. 그러면 **반대 명암에 잡힌 글자 구멍**
+  // ("70"의 0, "4"의 삼각형)만 남아 3·1·11·33 같은 또렷한 오답이 이겼다 — "자릿수를
+  // 더 많이 찾은 쪽이 이긴다"는 **살아남은** 명암끼리만 견주기 때문이다. 최대 턴을
+  // 알아도 못 막았다 (값이 70 이하이고 max 가 없으니 믿어 버린다). 엔진에 넣어 보면
+  // 가린 1초 동안 절반 가까이에서 단계가 실제로 움직였다.
+  //
+  // 막는 것은 슬래시를 본 명암보다 **글자를 적게 본 쪽**이 이긴 경우 중, 그 슬래시가
+  // **진짜**인 경우다. 슬래시 없이 숫자만 잡힌 크롭(영역을 숫자에만 맞춘 사람)은 그대로다.
+  //
+  // "진짜 슬래시"를 가르는 건, 뒤집힌 명암에서 "4"의 삼각 구멍이 슬래시처럼 보이는 일이
+  // 있어서다 (tools/tune-slash.js 참고: 1742개 중 35개). 그걸 믿고 막으면 "48" 을 못 읽는다.
+  // 둘 중 하나면 진짜로 본다:
+  //  · **슬래시 오른쪽(최대 턴)까지 숫자로 읽혔다** — 가려도 "/ 70" 은 남는다. 구멍 쪽은
+  //    오른쪽도 구멍이라 숫자로 안 읽힌다.
+  //  · **슬래시를 본 쪽 글자가 이긴 쪽보다 작지 않다**(GUARD_K) — 이긴 쪽이 구멍을 읽었다는
+  //    뜻이다. 회색으로 가리면 오른쪽 문턱이 흔들려 앞 조건이 빠지는데, 이게 받친다.
+  //  (크기를 쓰지만 명암을 **고르는** 데 쓰는 게 아니다 — 그건 두 번 해서 두 번 다 망했다,
+  //  위 MERGED_RATIO 아래 주석. 고르는 건 그대로 두고 고른 결과를 **물릴지만** 정한다.
+  //  잘못 걸려도 "모르겠음"이지 오답이 아니다.)
+  //
+  // 재 본 결과: 가림 오답 43·19·13·18% → 0.4·0·0·0.6% (배경·잡음·흰색·회색), 엔진에 넣어
+  // 1초 가렸을 때 단계가 움직인 것 절반 → 0. bench 790/0/2 와 최대 턴 조건 720/0/0 은 그대로.
+  if (best && !bestSlash && (slashRead > best.segs || (slashSegs > best.segs && slashH >= bestH * GUARD_K))) {
+    return null;
+  }
+
+  // 모양은 **이긴 것 하나만** 뽑는다 — 명암 둘 다 뽑으면 공짜가 아니다
   if (best && bestLeft) best.shapes = bestLeft.map((b) => normalize(cropBitmap(b, w)));
   return best;
 }
 
+/**
+ * 사용자가 가르친 대조표의 가중치 — 같은 점수면 가르친 쪽을 조금 더 믿는다.
+ *
+ * **재서 골랐다** (bench 의 "가르친 뒤" 줄, 앱과 같은 길로 가르친 표본 504장):
+ *   1.00 · 1.05 · 1.08  → 504 / 모르겠음 0 / 틀림 0
+ *   1.10                → 틀림 2 (44 → 22)
+ *   1.12 (예전 값)       → 모르겠음 2 · 틀림 2
+ * 가중치는 점수를 **곱해서** 올리므로, 크면 평소엔 문턱(minScore) 아래라 떨어지던 **글자
+ * 구멍**이 가르친 모양과 어설프게 닮아 문턱을 넘는다. 22px Charter "44"는 두 글자가 붙어
+ * 한 덩어리가 되고 구멍 쪽은 두 덩어리라, 구멍이 문턱을 넘는 순간 "자릿수를 더 많이
+ * 찾은 쪽"으로 이긴다. 예전 값 1.12 는 재 보지 않은 값이었다 (bench 의 가르친 뒤 줄이
+ * 아무것도 안 가르치고 있었다). 안전한 구간의 가운데를 잡았다.
+ */
+const TAUGHT_WEIGHT = 1.04;
+
+/**
+ * [가르치기] — 사람이 말해 준 값(`text`)의 글자 모양을 이 화면에서 뽑는다.
+ *
+ * **인식기와 같은 길로 자른다** (슬래시가 옆 숫자에 붙은 "/7", 두 글자가 한 덩어리인
+ * 경우를 다 다룬다 — 가르치려는 상황이 바로 그 상황이다). 점수 문턱은 0으로 낮춘다 —
+ * 못 읽는 폰트를 가르치려는 참인데 "확신이 없다"고 거절하면 앞뒤가 안 맞는다.
+ *
+ * ★ **자릿수는 사람이 알려 준 대로 찾는다**(wantDigits). 문턱을 0으로 낮추면 평소엔
+ * 점수에서 떨어지던 **글자 구멍 쪽 명암**이 살아남는다. "8"은 구멍이 둘이라 그쪽이
+ * 두 덩어리를 찾아 "자릿수를 더 많이 찾은 쪽이 이긴다"로 이겼고, 그래서 한 자리
+ * 숫자 "8"·"4" 를 가르치면 "숫자를 2개 찾았는데 1개라고 하셨어요"만 나왔다. 가르칠 수
+ * 있는 숫자가 빠지면 가르친 다른 숫자(가중치가 높다)가 그 자리를 먹어서 오히려 오독이
+ * 생겼다 (bench 의 "가르친 뒤" 줄: 44 → 22).
+ *
+ * @returns {{ok: true, templates: Array<{d: number, rows: string[]}>}
+ *          |{ok: false, found: number, want: number}}
+ */
+function teachShapes(gray, w, h, templates, text) {
+  const want = text.length;
+  const got = readTurn(gray, w, h, templates, { collect: true, minScore: 0, minMargin: 0, wantDigits: want });
+  if (got && got.shapes && got.shapes.length === want) {
+    return { ok: true, templates: got.shapes.map((grid, i) => ({ d: Number(text[i]), rows: gridToRows(grid) })) };
+  }
+  // 몇 개를 찾았는지는 알려 준다 — 사람이 적은 값이나 영역이 틀렸는지 가릴 수 있게
+  const any = readTurn(gray, w, h, templates, { collect: true, minScore: 0, minMargin: 0 });
+  return { ok: false, found: any && any.shapes ? any.shapes.length : 0, want };
+}
+
 module.exports = {
   CROP_TARGET_HEIGHT,
+  TAUGHT_WEIGHT,
+  teachShapes,
+  resizeGray,
+  fitCrop,
   SLASH,
   looksLikeSlash,
   diagOf,

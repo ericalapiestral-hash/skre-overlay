@@ -399,7 +399,7 @@ function stopCapture() {
  * 새 화면이 올 때마다 깨어나되, 인식은 주기마다 한 번만 돌린다.
  *
  * 예전엔 setInterval로 시간만 보고 돌렸다. 그러면 캡처가 초당 몇 장 안 올 때
- * **같은 화면을 두 번 읽는다** — 투표(vote.js)는 그걸 "두 프레임이 같게 읽혔다"로
+ * **같은 화면을 두 번 읽는다** — 추적기(follower.js)는 그걸 "두 프레임이 같게 읽혔다"로
  * 세어서, 한 번 잘못 읽은 화면을 확정해 버릴 수 있다. 이제 새 화면이 왔을 때만 센다.
  */
 function pump() {
@@ -509,25 +509,28 @@ function toGray(rgba, length) {
 }
 
 /**
- * 지정 영역을 잘라 인식기가 좋아하는 높이로 키운다.
- * 목표 높이는 인식기 쪽(CROP_TARGET_HEIGHT)에 있다 — 재는 것과 실제가 어긋나지 않게.
+ * 지정 영역을 **원본 크기 그대로** 잘라 온다.
+ *
+ * ★ 여기서 키우지 않는다. 인식기가 읽는 높이(CROP_TARGET_HEIGHT)로 맞추는 일은 메인이
+ * 벤치와 **같은 함수**(turnReader.fitCrop)로 한다. 예전엔 캔버스 'high' 로 키웠는데,
+ * 그건 벤치가 쓰는 이중선형과 달라서 재는 그림과 읽는 그림이 달랐고(오독 0.3% vs 0.6%),
+ * 브라우저·GPU 마다 구현도 달라 윈도우에서 어떻게 키워지는지 알 길이 없었다.
+ * 좌표는 정수로 맞춘다 — 소수 좌표면 캔버스가 반 칸씩 섞어 그려 원본이 아니게 된다.
  */
 function cropFrame() {
   const video = $('cap');
   if (!video.videoWidth || !state.region) return null;
   const { fx, fy, fw, fh } = state.region;
-  const sx = fx * video.videoWidth;
-  const sy = fy * video.videoHeight;
-  const sw = Math.max(4, fw * video.videoWidth);
-  const sh = Math.max(4, fh * video.videoHeight);
+  const sx = Math.round(fx * video.videoWidth);
+  const sy = Math.round(fy * video.videoHeight);
+  const sw = Math.max(4, Math.min(video.videoWidth - sx, Math.round(fw * video.videoWidth)));
+  const sh = Math.max(4, Math.min(video.videoHeight - sy, Math.round(fh * video.videoHeight)));
 
-  const scale = Math.max(1, Math.min(8, api.tune.cropHeight / sh));
   const canvas = /** @type {HTMLCanvasElement} */ ($('crop'));
-  canvas.width = Math.round(sw * scale);
-  canvas.height = Math.round(sh * scale);
+  canvas.width = sw;
+  canvas.height = sh;
   const ctx = canvas.getContext('2d', { willReadFrequently: true });
-  ctx.imageSmoothingEnabled = true;
-  ctx.imageSmoothingQuality = 'high';
+  ctx.imageSmoothingEnabled = false;
   ctx.drawImage(video, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height);
 
   const img = ctx.getImageData(0, 0, canvas.width, canvas.height);

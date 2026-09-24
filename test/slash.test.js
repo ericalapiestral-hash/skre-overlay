@@ -10,9 +10,16 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { readTurn, loadTemplates, looksLikeSlash, SLASH, CROP_TARGET_HEIGHT, binarize, components } =
-  require('../src/shared/turnReader');
-const { loadFixtures, upscale, RAW } = require('../tools/bench-reader');
+const {
+  readTurn,
+  looksLikeSlash,
+  looksLikeDigit,
+  SLASH,
+  CROP_TARGET_HEIGHT,
+  binarize,
+  components,
+} = require('../src/shared/turnReader');
+const { loadFixtures, upscale, templatesFor: benchTemplatesFor } = require('../tools/bench-reader');
 
 const data = loadFixtures();
 const pairs = (data && data.pairs) || [];
@@ -20,19 +27,14 @@ const skip = pairs.length === 0 ? '표본이 없다 (npm run fixtures)' : false;
 
 /**
  * 그 폰트에서 뽑은 대조표는 빼고 맞춘다 — bench와 같은 "처음 보는 게임 폰트" 조건이다.
- * 안 빼면 자기 폰트를 자기가 맞히는 셈이라 실제보다 쉬워진다.
+ * 안 빼면 자기 폰트를 자기가 맞히는 셈이라 실제보다 쉬워진다. (빼는 규칙은 bench 에
+ * 한 곳만 둔다 — 예전엔 여기에 따로 있었고, 행 문자열이 똑같을 때만 빼서 거의 안 먹었다.)
  */
-const byFont = new Map();
-function templatesFor(font) {
-  if (!byFont.has(font)) {
-    const drop = new Set((data.holdout && data.holdout[font]) || []);
-    byFont.set(font, loadTemplates({ templates: RAW.templates.filter((t) => !drop.has(t.rows.join('')))}));
-  }
-  return byFont.get(font);
-}
+const templatesFor = (font) => benchTemplatesFor(font);
 
 /**
- * 앱과 같은 조건으로 읽는다 — **글자 높이**(s.height)를 CROP_TARGET_HEIGHT로 키운다.
+ * 앱과 같은 조건으로 읽는다 — **글꼴 크기**(s.height)를 CROP_TARGET_HEIGHT로 키운다.
+ * (s.height 는 숫자의 높이가 아니라 글꼴 크기다 — 숫자는 그 0.71~0.73배다.)
  * 이미지 높이(s.h)에는 여백이 들어 있어서 그걸로 계산하면 확대가 거의 안 되고,
  * 확대 없이 읽으면 정확도가 눈에 띄게 떨어진다 (bench의 "확대 없이" 줄 참고).
  */
@@ -65,8 +67,9 @@ test('"N / M"에서 왼쪽 숫자만 읽는다', { skip }, () => {
     `${pairs.length}장 중 ${wrong.length}장을 틀리게 읽었다:\n${show}`,
   );
   // 못 읽는 건(모르겠음) 괜찮다 — 추적기가 "가려짐"으로 보고 그대로 있고, 초당 열 장쯤
-  // 읽으므로 다음 프레임에 따라잡는다. 지금 못 읽는 것들은 작은 글자에서 슬래시가 옆
-  // 숫자에 **붙어 버린** 경우인데, 그때 억지로 읽으면 자신 있게 틀린 턴이 나온다.
+  // 읽으므로 다음 프레임에 따라잡는다. 슬래시가 옆 숫자에 **붙어 버리면** 억지로 읽지 않고
+  // 모르겠음으로 둔다. (지금 표본 1008장은 전부 읽힌다 — 예전엔 3.2%가 모르겠음이었다.
+  // 문턱을 넉넉히 둔 건 처음 보는 게임 폰트 때문이다.)
   assert.ok(
     unknown.length <= pairs.length * 0.08,
     `못 읽은 것이 ${unknown.length}장 (${((unknown.length / pairs.length) * 100).toFixed(1)}%) — 8%를 넘으면 안 된다`,
@@ -94,16 +97,75 @@ test('슬래시를 재는 값은 숫자와 겹치지 않는다', { skip: !data ?
   assert.ok(SLASH.maxRatio >= 0.57, 'ratio 울타리가 슬래시(최대 0.57)를 잘라낸다');
   assert.ok(SLASH.maxFill >= 0.49, 'fill 울타리가 슬래시(최대 0.49)를 잘라낸다');
 
-  // 숫자만 그린 표본에서는 슬래시가 하나도 안 나와야 한다 (오검출이 없다는 뜻)
+  // ★ 숫자만 그린 표본에서 **진짜 글자**가 슬래시로 보이면 안 된다 — 보이면 숫자가 잘린다.
+  //
+  // **앱과 같은 조건으로 잰다** — 64px로 키우고, 표본 **전부**를 본다. 예전엔 원본 크기로
+  // 앞 200장(폰트 2벌)만 봤는데, CLAUDE.md 가 "원본 크기로 재지 말 것"이라고 한 바로 그
+  // 조건이었다. 확대하면 획이 번져 값이 달라진다 (같은 200장을 키우면 4개가 걸렸다).
+  //
+  // 뒤집힌 명암의 덩어리(글자 구멍)는 따로 센다. "4"의 삼각 구멍은 슬래시처럼 생겨서
+  // 몇 개 걸리는데, 그 명암은 자릿수 싸움에서 지고 readTurn 의 가드가 높이로 거른다 —
+  // 끝에서 끝까지의 결과는 bench 자물쇠(turnReader.test.js)와 아래 가림 시험이 본다.
+  // 여기서는 그 수가 **늘지 않는지**만 본다 (tune-slash 가 잰 35개).
   let falseSlash = 0;
-  for (const s of data.samples.slice(0, 200)) {
+  let holeSlash = 0;
+  for (const s of data.samples) {
     const gray = new Uint8Array(Buffer.from(s.gray, 'base64'));
+    const big = upscale(gray, s.w, s.h, Math.max(1, Math.min(8, CROP_TARGET_HEIGHT / s.height)));
     for (const bright of [true, false]) {
-      const comps = components(binarize(gray, s.w, s.h, bright), s.w, s.h);
-      for (const c of comps) if (c.h > 5 && c.w > 2 && looksLikeSlash(c, s.w)) falseSlash += 1;
+      const flipped = bright === Boolean(s.invert);
+      const comps = components(binarize(big.gray, big.w, big.h, bright), big.w, big.h);
+      for (const c of comps) {
+        if (!looksLikeDigit(c, big.h, 3) || !looksLikeSlash(c, big.w)) continue;
+        if (flipped) holeSlash += 1;
+        else falseSlash += 1;
+      }
     }
   }
-  assert.strictEqual(falseSlash, 0, `숫자 표본에서 슬래시로 잘못 본 덩어리 ${falseSlash}개`);
+  assert.strictEqual(falseSlash, 0, `숫자 표본에서 진짜 글자를 슬래시로 잘못 본 덩어리 ${falseSlash}개`);
+  assert.ok(holeSlash <= 35, `뒤집힌 명암에서 슬래시로 보이는 구멍이 ${holeSlash}개로 늘었다 (잰 값 35)`);
+});
+
+test('연출이 지금 턴만 가리고 "/ 70"은 남아도 오답을 내지 않는다', { skip }, () => {
+  // ★ 사용자가 꼽은 첫 불만(스킬 연출이 턴을 가린다)과 같은 상황이다.
+  //
+  // 글자를 제대로 본 명암은 슬래시를 찾고도 왼쪽이 비어서 기권한다. 예전엔 그러면
+  // **반대 명암에 잡힌 글자 구멍**("70"의 0, "4"의 삼각형)만 남아 3·1·11·33 같은 또렷한
+  // 오답이 이겼다 — 슬래시 왼쪽을 배경색으로 덮으면 958장 중 416장(43%)이 값을 냈고,
+  // 엔진에 넣으면 가린 1초 동안 절반 가까이에서 단계가 실제로 움직였다.
+  // 최대 턴을 알아도 못 막았다 (값이 70 이하이고 max 가 없으니 믿어 버린다).
+  let seed = 7;
+  const rnd = () => (seed = (seed * 1103515245 + 12345) & 0x7fffffff) / 0x7fffffff;
+  const fills = { 배경: (bg) => bg, 잡음: () => (rnd() * 255) | 0, 흰색: () => 250, 회색: () => 128 };
+  for (const [name, fill] of Object.entries(fills)) {
+    let n = 0;
+    const wrong = [];
+    for (const s of pairs) {
+      const f = upscale(new Uint8Array(Buffer.from(s.gray, 'base64')), s.w, s.h,
+        Math.max(1, Math.min(8, CROP_TARGET_HEIGHT / s.height)));
+      const comps = components(binarize(f.gray, f.w, f.h, !s.invert), f.w, f.h);
+      const slash = comps.find((c) => looksLikeSlash(c, f.w));
+      if (!slash) continue;
+      const o = Uint8Array.from(f.gray);
+      const bg = f.gray[0];
+      for (let y = 0; y < f.h; y += 1) for (let x = 0; x < slash.minX - 2; x += 1) o[y * f.w + x] = fill(bg);
+      n += 1;
+      const r = readTurn(o, f.w, f.h, templatesFor(s.font), { maxTurn: s.max });
+      if (r) wrong.push(`"${s.text}" (${s.font} ${s.height}px) → ${r.value}`);
+      // 막 켜서 최대 턴을 아직 모를 때도 — 예전엔 슬래시가 맨 앞이면 오른쪽 숫자를 지금
+      // 턴("/70" → 170)과 최대 턴(70)에 **동시에** 넣어서, 틀린 턴과 최대 턴 채택이 한
+      // 프레임에서 같이 나왔다
+      const blind = readTurn(o, f.w, f.h, templatesFor(s.font));
+      if (blind) wrong.push(`"${s.text}" (${s.font} ${s.height}px, 최대 턴 모름) → ${blind.value}`);
+    }
+    assert.ok(n > 500, `${name}: 가린 표본이 ${n}장뿐이다`);
+    // 가드를 넣은 뒤 잰 값(최대 턴을 알 때): 배경 0.4% · 잡음 0% · 흰색 0% · 회색 0.6%
+    // (예전 43·19·13·18%). 모를 때까지 합쳐 2% 를 넘으면 안 된다.
+    assert.ok(
+      wrong.length <= n * 0.02,
+      `${name}으로 가렸더니 ${n}장 중 ${wrong.length}장이 값을 냈다:\n  ${wrong.slice(0, 8).join('\n  ')}`,
+    );
+  }
 });
 
 test('슬래시가 없으면 하던 대로 읽는다', { skip }, () => {

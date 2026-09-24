@@ -12,24 +12,35 @@
 // 것과 같은 조건으로 잰다"). 원본 크기로 재는 쪽으로 되돌리지 말 것.
 'use strict';
 
-const { CROP_TARGET_HEIGHT, binarize, components, diagOf, looksLikeDigit } = require('../src/shared/turnReader');
+const { CROP_TARGET_HEIGHT, SLASH, binarize, components, diagOf, looksLikeDigit } = require('../src/shared/turnReader');
 const { loadFixtures, upscale } = require('./bench-reader');
 
 /**
  * 표본 한 장에서 글자로 볼 만한 덩어리들의 값을 잰다 (앱과 같이 확대한 뒤).
  *
+ * 덩어리마다 **어느 명암에서 잡혔는지**(`flipped`)를 같이 적는다. 둘은 뜻이 다르다:
+ *  · 글자가 앞으로 잡히는 명암의 덩어리 = **진짜 글자.** 이게 슬래시로 보이면 진짜
+ *    숫자가 잘려 나간다 — 문턱은 여기서 **거짓 양성 0**을 지켜야 한다.
+ *  · 뒤집힌 명암의 덩어리 = **글자 구멍·배경 조각.** "4"의 삼각 구멍은 슬래시처럼
+ *    생겨서 여기서는 문턱을 넘는 게 있다. 그 명암은 대개 자릿수 싸움에서 지고,
+ *    readTurn 의 "가려진 지금 턴" 가드도 높이로 이걸 걸러 낸다. 그래서 따로 **세어서
+ *    보여만** 준다 (0으로 맞추려 들면 문턱이 쪼그라들어 진짜 슬래시를 놓친다 — 재 봤다:
+ *    양쪽을 다 0으로 맞추면 여유가 0.07 → 0.02 로 준다).
+ *
+ * ⚠ 예전엔 `data.samples.flatMap(measureSample)` 으로 불러서 flatMap 이 넘기는 **번호**가
+ * 두 번째 인자로 들어갔다. 첫 표본만 양쪽 명암을 재고 나머지는 한쪽만 쟀는데, 주석은
+ * "양쪽을 다 본다"고 적혀 있었다. 부르는 쪽은 인자를 하나만 넘길 것.
+ *
  * @param {object} s 표본
- * @param {boolean} [onlyRight] 글자가 앞으로 잡히는 명암만 볼지.
- *   **숫자는 양쪽 명암을 다 본다** — 앱이 둘 다 시도하므로, 뒤집힌 쪽에서 잡힌 배경
- *   조각이 슬래시로 오인될 위험까지 세야 한다. 반대로 **슬래시는 올바른 명암만** 본다.
- *   뒤집힌 쪽에서 잡히는 건 슬래시가 아니라 배경이라, 그걸 "못 잡은 슬래시"로 세면
- *   잡는 비율이 헛되이 낮게 나온다.
+ * @param {boolean} [onlyRight] 글자가 앞으로 잡히는 명암만 볼지. **슬래시는 올바른
+ *   명암만** 본다 — 뒤집힌 쪽에서 잡히는 건 슬래시가 아니라 배경이라, 그걸 "못 잡은
+ *   슬래시"로 세면 잡는 비율이 헛되이 낮게 나온다.
  */
 function measureSample(s, onlyRight = false) {
   const gray = new Uint8Array(Buffer.from(s.gray, 'base64'));
   const big = upscale(gray, s.w, s.h, Math.max(1, Math.min(8, CROP_TARGET_HEIGHT / s.height)));
   const rows = [];
-  const polarities = onlyRight ? [!s.invert] : [true, false];
+  const polarities = onlyRight ? [!s.invert] : [!s.invert, Boolean(s.invert)];
   for (const bright of polarities) {
     const comps = components(binarize(big.gray, big.w, big.h, bright), big.w, big.h);
     for (const c of comps) {
@@ -38,6 +49,7 @@ function measureSample(s, onlyRight = false) {
         ratio: c.w / c.h,
         fill: c.count / (c.w * c.h),
         diag: diagOf(c, big.w),
+        flipped: bright === Boolean(s.invert),
         where: `${s.font} ${s.height}px${s.invert ? ' 반전' : ''}`,
       });
     }
@@ -57,11 +69,16 @@ function main() {
     console.error('표본에 슬래시가 없다 — npm run fixtures 를 먼저 돌릴 것');
     return 1;
   }
-  const digits = data.samples.flatMap(measureSample);
+  const all = data.samples.flatMap((s) => measureSample(s));
+  const digits = all.filter((x) => !x.flipped);
+  const holes = all.filter((x) => x.flipped);
   const slash = data.slashes.flatMap((x) => measureSample(x, true));
-  console.log(`숫자 덩어리 ${digits.length}개 · 슬래시 덩어리 ${slash.length}개 (앱과 같이 ${CROP_TARGET_HEIGHT}px로 확대해서 잼)\n`);
+  console.log(
+    `숫자 덩어리 ${digits.length}개 · 뒤집힌 명암 덩어리(구멍·배경) ${holes.length}개 · ` +
+      `슬래시 덩어리 ${slash.length}개 (앱과 같이 ${CROP_TARGET_HEIGHT}px로 확대해서 잼)\n`,
+  );
 
-  for (const [name, rows] of [['숫자', digits], ['슬래시', slash]]) {
+  for (const [name, rows] of [['숫자', digits], ['구멍', holes], ['슬래시', slash]]) {
     const r = stats(rows.map((x) => x.ratio));
     const f = stats(rows.map((x) => x.fill));
     const d = stats(rows.map((x) => x.diag));
@@ -112,6 +129,11 @@ function main() {
   console.log(`  슬래시 ${(best.tp * 100).toFixed(1)}% 잡음 · 숫자를 슬래시로 잘못 봄 0/${digits.length}`);
   console.log(`  제일 가까운 숫자가 문턱 밖으로 ${best.near.toFixed(3)} 떨어져 있다 (클수록 안전)`);
   console.log(`  제일 아슬아슬하게 잡힌 슬래시의 여유 ${best.slack.toFixed(3)}`);
+  const inHole = (r, f, d) => holes.filter((x) => x.ratio < r && x.fill < f && x.diag > d).length;
+  console.log(
+    `  (참고) 뒤집힌 명암에서 슬래시처럼 보이는 구멍: 고른 값 ${inHole(best.ratio, best.fill, best.diag)}개 · ` +
+      `지금 값(${SLASH.maxRatio}/${SLASH.maxFill}/${SLASH.minDiag}) ${inHole(SLASH.maxRatio, SLASH.maxFill, SLASH.minDiag)}개 / ${holes.length}`,
+  );
   return 0;
 }
 

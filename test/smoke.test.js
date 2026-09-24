@@ -15,7 +15,6 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 const { spawnSync, execSync } = require('node:child_process');
-const { CROP_TARGET_HEIGHT } = require('../src/shared/turnReader');
 
 const ELECTRON = path.join(__dirname, '..', 'node_modules', '.bin', 'electron');
 const ROOT = path.join(__dirname, '..');
@@ -101,11 +100,10 @@ test('앱이 실제로 뜨고 화면·프리로드·IPC가 이어진다', { skip
     'engine',
     'keys',
     'region',
-    'tune',
     'win',
   ]);
-  // 크롭 높이는 인식기에 한 값만 두고 preload로 건네야 한다 (CLAUDE.md). 실제로 그런지 본다.
-  assert.strictEqual(got.probe.cropHeight, CROP_TARGET_HEIGHT, '화면이 크롭 높이를 따로 정하고 있다');
+  // 크롭을 키우는 일은 화면이 아니라 메인(fitCrop)이 한다 — 화면에 크롭 높이를 건네면
+  // 누군가 다시 캔버스로 키우기 시작한다 (벤치와 다른 그림이 된다)
   assert.deepStrictEqual(
     got.probe.elements,
     ['app', 'steps', 'status', 'build', 'auto', 'rate'],
