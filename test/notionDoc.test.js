@@ -129,6 +129,26 @@ test('요일을 집어낸다', () => {
   assert.deepStrictEqual(weekdaysOf(['공성전', '수 · 토']), ['수', '토']);
   assert.deepStrictEqual(weekdaysOf(['파이 세인 4턴']), [], '엉뚱한 데서 요일을 만들면 안 된다');
   assert.deepStrictEqual(weekdaysOf(['1일차 공략']), [], '"1일차"의 일은 요일이 아니다');
+  // 붙여 쓴 요일 — 세 글자 이상, 요일 순서대로 (예전 주석은 잡는다고 했지만 못 잡았다)
+  assert.deepStrictEqual(weekdaysOf(['월수금 보스']), ['월', '수', '금']);
+  assert.deepStrictEqual(weekdaysOf(['금화 보상', '금일 공략', '일일 퀘스트']), [], '흔한 낱말을 요일로 보면 안 된다');
+  // 예전엔 요일로 잡던 것들
+  assert.deepStrictEqual(weekdaysOf(['공성전 1일 공략']), [], '숫자 뒤의 "일"은 요일이 아니다');
+  assert.deepStrictEqual(weekdaysOf(['D-7일']), []);
+  assert.deepStrictEqual(weekdaysOf(['화 속성 덱']), [], '"화 속성"의 화는 화요일이 아니다');
+  assert.deepStrictEqual(weekdaysOf(['(월) 아칸', '월/목']), ['월', '목']);
+});
+
+test('맨 위 페이지가 콘텐츠 페이지여도 탭과 요일을 정한다', () => {
+  // ★ 맨 위 이름은 묶음 이름에서 빼는데 콘텐츠 판정에서도 빠져서, "공성전" 페이지 주소를
+  // 바로 넣으면 빌드가 전부 "기타" 탭으로 갔다
+  const cat = toCatalog({
+    title: '공성전 (월요일)',
+    children: [{ title: '루디 덱', markdown: '`0턴` 루디' }],
+  });
+  assert.strictEqual(cat.builds[0].category, '공성전');
+  assert.deepStrictEqual(cat.builds[0].weekdays, ['월']);
+  assert.strictEqual(cat.builds[0].group, '', '묶음 이름에는 여전히 안 넣는다');
 });
 
 test('주소에서 페이지 id를 뽑는다', () => {

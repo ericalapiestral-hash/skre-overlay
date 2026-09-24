@@ -65,7 +65,13 @@ function categoryOf(parts) {
 }
 
 /**
- * 제목·묶음에 적힌 요일. "월수금" 처럼 붙여 쓴 것도, "월 · 수" 도 잡는다.
+ * 제목·묶음에 적힌 요일. "월요일", "월 · 수", "월/수/금", "(월)", 그리고 붙여 쓴 "월수금"(세 글자
+ * 이상, 요일 순서대로)을 잡는다.
+ *
+ * 걸러 내는 것:
+ *  · **숫자 바로 뒤의 "일"** — "1일 공략", "D-7일"은 일요일이 아니다.
+ *  · **"속성" 앞의 글자** — "화 속성 덱"의 화는 화요일이 아니다 (화·수·목·금·토는 속성 이름이기도 하다).
+ * (예전 주석은 "월수금"도 잡는다고 했지만 실제로는 못 잡았고, 위 두 경우는 요일로 잡았다.)
  *
  * ⚠ 이 규칙은 **실제 도감을 보고 정한 것이 아니다.** 공성전 페이지에 요일이 어떻게
  * 적혀 있는지 확인하고 고칠 것. 못 잡아도 탭은 그대로 보이고 "오늘 보스 먼저 고르기"만
@@ -73,14 +79,21 @@ function categoryOf(parts) {
  */
 function weekdaysOf(parts) {
   const joined = parts.join(' ');
-  const found = [];
-  for (const d of WEEKDAYS) {
-    // "일요일"의 '일'과 "1일차"의 '일'을 가르려고 요일 낱말 주변만 본다
-    if (new RegExp(`${d}요일|(^|[^가-힣])${d}([^가-힣]|$)`).test(joined) && !found.includes(d)) {
-      found.push(d);
-    }
+  const found = new Set();
+  const days = WEEKDAYS.join('');
+  // 붙여 쓴 요일 묶음 — 요일 글자로만 된 **세 글자 이상**, 그리고 **요일 순서대로** ("월수금").
+  // 두 글자까지 받으면 "금화"·"금일"·"일일" 같은 흔한 낱말이 요일이 된다.
+  for (const m of joined.matchAll(new RegExp(`(^|[^가-힣])([${days}]{3,7})(?=[^가-힣]|$)`, 'g'))) {
+    const order = [...m[2]].map((ch) => days.indexOf(ch));
+    if (order.every((v, i) => i === 0 || v > order[i - 1])) for (const d of m[2]) found.add(d);
   }
-  return found;
+  for (const d of WEEKDAYS) {
+    if (joined.includes(`${d}요일`)) found.add(d);
+    // 낱자 요일 — 앞뒤가 한글이 아니어야 한다 ("일요일"의 일·"1일차"의 일을 가르려고)
+    const alone = new RegExp(`(^|[^가-힣0-9])${d}(?=[^가-힣]|$)(?!\\s*속성)`, 'g');
+    if (alone.test(joined)) found.add(d);
+  }
+  return WEEKDAYS.filter((d) => found.has(d));
 }
 
 /** 본문에 읽을 것이 있나 — 빈 페이지를 빌드로 세지 않으려고 */
@@ -208,6 +221,17 @@ function toCatalog(root, options = {}) {
   for (const child of (root && root.children) || []) walk(child, []);
   // 맨 위 페이지 자체에 순서가 적혀 있는 경우도 놓치지 않는다
   if (root && looksLikeBuild(root) && !(root.children || []).length) walk(root, []);
+
+  // ★ 콘텐츠(탭)를 못 정한 빌드는 **맨 위 페이지 이름**으로 한 번 더 본다. 맨 위 이름은 묶음
+  // 이름에서 뺐는데("PVE › …"가 안 되게) 콘텐츠 판정에서도 빠져서, "공성전" 페이지 주소를 바로
+  // 넣으면 빌드가 전부 "기타" 탭으로 갔다. 요일도 같다.
+  const rootTitle = (root && root.title) || '';
+  if (rootTitle) {
+    for (const b of builds) {
+      if (!b.category) b.category = categoryOf([rootTitle]);
+      if (!Array.isArray(b.weekdays) || b.weekdays.length === 0) b.weekdays = weekdaysOf([rootTitle]);
+    }
+  }
 
   return { title: (root && root.title) || '도감', syncedAt, builds, restored, missing };
 }

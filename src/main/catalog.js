@@ -147,6 +147,10 @@ function loadCatalog(file) {
         stepCount: parsed.stepCount,
         strategy: parsed.strategy,
         notes: parsed.notes,
+        // 파서가 **무언가를 버리거나 바꾼** 알림만 — 화면에 ⚠ 로 보여준다. 예전엔 notes 를
+        // 아무 데도 안 실어서, 리셋 빌드의 뒤 라운드를 각주로 버려도 "인식됨"으로만 보였다.
+        // ("본문 전체에서 찾았어요" 같은 안내는 뺀다 — 잘못된 건 없다)
+        warnings: parsed.notes.filter((n) => !n.startsWith('스킬 순서 제목')),
       };
     });
 

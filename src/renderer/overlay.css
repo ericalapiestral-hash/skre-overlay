@@ -230,6 +230,14 @@ select option {
   background: var(--accent-dim);
 }
 
+/* 파서가 무언가를 버리거나 바꾼 빌드 — 작게, 그러나 보이게 */
+#parse-notes {
+  font-size: calc(10.5px * var(--scale));
+  color: var(--accent);
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
 /* ── 단계 ── */
 
 #steps {

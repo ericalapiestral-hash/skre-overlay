@@ -127,6 +127,7 @@ function lightCatalog(c) {
       weekdays: b.weekdays,
       stepCount: b.stepCount,
       strategy: b.strategy,
+      warnings: b.warnings || [],
       // 변형이 둘 이상인 그룹만 — 칩을 그리는 데 필요한 것뿐
       branches: b.groups
         .map((g, at) => ({ at, labels: g.variants.map((v) => v.label) }))
@@ -709,6 +710,12 @@ function doctor() {
     console.log('스킬 순서를 못 읽은 빌드 (본문은 그대로 보여줍니다):');
     for (const name of cat.stats.noSteps.slice(0, 20)) console.log(`  · ${name}`);
     if (cat.stats.noSteps.length > 20) console.log(`  … 외 ${cat.stats.noSteps.length - 20}개`);
+  }
+  // 파서가 무언가를 버리거나 바꾼 빌드 — 순서는 읽었지만 일부를 각주로 보거나 라운드를 나눴다
+  const warned = cat.builds.filter((b) => b.warnings && b.warnings.length > 0);
+  if (warned.length > 0) {
+    console.log(`\n순서는 읽었지만 일부를 다르게 본 빌드 (${warned.length}개):`);
+    for (const b of warned.slice(0, 20)) console.log(`  · ${b.name} — ${b.warnings.join(' / ')}`);
   }
   return 0;
 }

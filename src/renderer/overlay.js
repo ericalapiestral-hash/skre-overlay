@@ -188,7 +188,21 @@ async function applyFlow({ keepIndex = false } = {}) {
   state.steps = r.steps;
   state.index = r.index;
   renderVariants();
+  renderParseNotes(build);
   await renderSteps();
+}
+
+/**
+ * 파서가 이 빌드에서 **무언가를 버리거나 바꿨으면** 단계 위에 알린다.
+ * 예전엔 아무 데도 안 보여서, 리셋 빌드의 뒤 라운드를 각주로 버려도 사람은 몰랐다 —
+ * 도감엔 있는데 오버레이엔 없는 "빌드가 안 보인다"와 같은 종류다.
+ */
+function renderParseNotes(build) {
+  const el = $('parse-notes');
+  const warnings = (build && build.warnings) || [];
+  el.classList.toggle('hidden', warnings.length === 0);
+  el.textContent = warnings.length ? `⚠ ${warnings.join(' · ')}` : '';
+  el.title = '도감 본문을 읽다가 일부를 다르게 봤어요. 순서가 이상하면 도감의 이 부분을 확인해 주세요.';
 }
 
 async function selectBuild(id, { save = true } = {}) {
