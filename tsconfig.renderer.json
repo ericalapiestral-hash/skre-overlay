@@ -10,6 +10,7 @@
     "noEmit": true,
     "strict": false,
     "skipLibCheck": true,
+    "resolveJsonModule": true,
     "types": ["node"]
   },
   "include": ["src/renderer/**/*.js", "src/renderer/**/*.d.ts", "src/preload/**/*.js"]

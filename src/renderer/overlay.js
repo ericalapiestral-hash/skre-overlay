@@ -1204,6 +1204,8 @@ window.addEventListener('beforeunload', stopCapture);
   applyScale(scale);
   $('tick').value = String(state.tickMs);
   $('tick-val').textContent = `${state.tickMs}ms`;
+  // 어느 판인지 — 이상한 걸 알릴 때 "몇 번째 판에서"를 같이 말할 수 있게
+  $('build-stamp').textContent = `판: ${api.app.build}`;
 
   await loadCatalog({ first: true });
   if (usingPreset) {

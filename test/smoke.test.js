@@ -93,6 +93,7 @@ test('앱이 실제로 뜨고 화면·프리로드·IPC가 이어진다', { skip
 
   // 프리로드 다리 — 하나라도 빠지면 화면이 통째로 죽는다
   assert.deepStrictEqual(got.probe.bridge, [
+    'app',
     'capture',
     'catalog',
     'config',
@@ -132,6 +133,8 @@ test('앱이 실제로 뜨고 화면·프리로드·IPC가 이어진다', { skip
   // 빈 화면으로는 못 가르친다 — 그래도 **답은 와야** 한다 (사람 말로)
   assert.deepStrictEqual(got.probe.teach, { ok: false, error: 'string' });
   assert.deepStrictEqual(got.probe.diag, ['frames', 'samples', 'spanMs']);
+  // 몇 번째 판인지 — 손으로 띄웠으니 dev 로 찍힌다 (CI 가 짓는 exe 에는 태그+커밋)
+  assert.match(String(got.probe.build), /-dev$/, `판 표시가 이상하다: ${got.probe.build}`);
   // 기본 위치로 시작했어도 설정에는 안 남는다
   assert.strictEqual(got.probe.turnRegion, null, '앱이 짐작한 기본 위치를 설정에 저장했다');
 

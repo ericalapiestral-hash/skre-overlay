@@ -25,6 +25,7 @@ const { toCatalog } = require('../shared/notionDoc');
 const { parseBuild } = require('../shared/steps');
 const { pickSource } = require('../shared/capture');
 const { loadTemplates, fitCrop } = require('../shared/turnReader');
+const { BUILD } = require('../shared/buildInfo');
 
 const BUILTIN = loadTemplates(require('../shared/templates.json'));
 const DOCTOR = process.argv.includes('--doctor');
@@ -463,7 +464,8 @@ function registerIpc() {
     try {
       const diag = await dumpDiagnostics(address);
       const file = desktopFile('skre-노션');
-      fs.writeFileSync(file, JSON.stringify(diag, null, 1), 'utf8');
+      // 어느 판이 뜬 것인지 같이 남긴다 — 긁는 방법은 판마다 달라진다 (shared/buildInfo.js)
+      fs.writeFileSync(file, JSON.stringify({ app: BUILD, ...diag }, null, 1), 'utf8');
       return file;
     } catch {
       return ''; // 뜨는 데 실패해도 부르는 쪽 메시지는 나가야 한다
@@ -596,7 +598,8 @@ function registerIpc() {
     if (!recorder.frameCount) return { ok: false, error: '기록된 프레임이 없어요. 자동을 켜고 잠시 둔 뒤 눌러 주세요.' };
     const file = desktopFile('skre-기록');
     try {
-      fs.writeFileSync(file, JSON.stringify(recorder.dump(), null, 1));
+      // 어느 판의 추적기·인식기에서 나온 기록인지 같이 남긴다 (shared/buildInfo.js)
+      fs.writeFileSync(file, JSON.stringify(recorder.dump({ meta: { app: BUILD } }), null, 1));
     } catch (e) {
       return { ok: false, error: `저장 실패: ${e instanceof Error ? e.message : String(e)}` };
     }
@@ -683,7 +686,7 @@ function registerShortcuts() {
 function doctor() {
   const env = catalogEnv();
   const cat = refreshCatalog();
-  console.log('── SKRE 오버레이 자가 점검 ──');
+  console.log(`── SKRE 오버레이 자가 점검 (${BUILD}) ──`);
   console.log(`설정 파일 : ${store.file}`);
   console.log(`대조표    : 기본 ${BUILTIN.length}개 + 가르친 것 ${(store.load().userTemplates || []).length}개`);
 
@@ -805,6 +808,7 @@ function smoke() {
               .filter((id) => document.getElementById(id)),
             statusText: (document.getElementById('status') || {}).textContent || '',
             presets: api && api.region && api.region.presets ? api.region.presets.map((p) => p.id) : null,
+            build: api && api.app ? api.app.build : null,
           };
           // 진짜 IPC 왕복 — 프리로드 다리와 메인 핸들러를 같이 확인한다
           try {

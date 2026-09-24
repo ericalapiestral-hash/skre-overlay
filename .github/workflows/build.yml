@@ -24,24 +24,37 @@ jobs:
   test:
     runs-on: ubuntu-latest
     steps:
+      # 쓰기 토큰이 필요 없는 잡이다 — 체크아웃에 토큰을 남기지 않는다 (아래 build-windows 참고)
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci
-      # 앱이 진짜로 뜨는지 보는 테스트는 화면이 필요하다 (test/smoke.test.js)
+      # 앱이 진짜로 뜨는지·화면까지 도는지 보는 테스트는 화면이 필요하다
+      # (test/smoke.test.js · test/e2e.test.js · test/notionScrape.test.js)
       - run: sudo apt-get update && sudo apt-get install -y xvfb
-      - run: npm run check
+      - run: npm run typecheck
+      # 테스트는 **한 번만** 돌린다. 예전엔 `npm run check` 로 한 번, 아래 검사로 또 한 번
+      # 돌렸는데, 두 번째는 pipefail 이 없어서 실패가 tee 의 0 에 가려졌다 — 요약이 안
+      # 찍히고 죽으면 grep 이 못 찾아 "건너뜀 0개"로 통과했다.
+      #
       # ★ **건너뛴 테스트가 있으면 실패로 친다.**
       #
       # 여기 테스트들은 조건이 안 맞으면 스스로 건너뛴다 — 화면이 없으면 부팅 테스트가,
       # 표본 파일이 없으면 인식기 테스트가. 그건 사람이 직접 돌릴 때는 옳지만, CI에서는
       # **초록불인데 아무것도 안 본 상태**가 된다. 검사를 못 했으면 못 했다고 해야 한다.
-      - name: 건너뛴 테스트가 없는지
+      - name: 테스트 (건너뛴 게 없는지까지)
+        shell: bash
         run: |
-          set -e
+          set -eo pipefail
           npm test 2>&1 | tee out.txt
-          n=$(grep -oP '^# skipped \K\d+' out.txt || echo 0)
+          if ! grep -qE '^# tests [0-9]+' out.txt; then
+            echo "::error::테스트 요약이 안 찍혔다 — 러너가 도중에 죽었다"
+            exit 1
+          fi
+          n=$(grep -oP '^# skipped \K\d+' out.txt)
           echo "건너뜀 $n개"
           if [ "$n" != "0" ]; then
             echo "::error::테스트 $n개가 건너뛰어졌다 — CI에서는 전부 돌아야 한다"
@@ -55,12 +68,24 @@ jobs:
     permissions:
       contents: write
     steps:
+      # ★ 쓰기 토큰을 체크아웃에 남기지 않는다. 이 잡은 contents: write 인데, 남겨 두면
+      # 곧이은 `npm ci` 가 돌리는 의존성 설치 스크립트가 그 토큰을 읽을 수 있다.
+      # 릴리스는 gh 가 GH_TOKEN 으로만 올리므로 잃는 것이 없다.
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm ci
-      - run: npx electron-builder --win --publish never
+      # ★ **몇 번째 판인지 exe 에 심는다** (src/shared/buildInfo.js). package.json 의 version 은
+      # 늘 0.9.0 이라, 안 심으면 받은 전투 기록이 어느 판의 추적기·인식기에서 나왔는지
+      # 파일만으로는 알 수 없다. 기록·노션 덤프·설정 화면에 같이 찍힌다.
+      - name: exe 짓기
+        shell: bash
+        env:
+          TAG: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || inputs.tag || 'dev' }}
+        run: npx electron-builder --win --publish never -c.extraMetadata.skreBuild="${TAG}+${GITHUB_SHA::7}"
 
       # ★ **릴리스를 지은 그 자리에서 바로 올린다.**
       #
@@ -69,8 +94,8 @@ jobs:
       # 빌드가 실패했다** ("Artifact storage quota has been hit"). exe는 멀쩡히
       # 지어졌는데 옮기다가 막힌 것이다. 같은 잡에서 올리면 그 왕복 자체가 없어진다.
       #
-      # 파일 이름은 태그를 따라가게 한다. package.json 의 version 은 NSIS 때문에
-      # 숫자만 쓰므로(0.9.0), 그대로 두면 test.1 과 test.2 의 이름이 똑같아진다 —
+      # 파일 이름은 태그를 따라가게 한다. package.json 의 version 은 0.9.0 으로 두고
+      # 판 구분은 태그로 하므로, 그대로 두면 test.1 과 test.2 의 이름이 똑같아진다 —
       # 실제로 test.2 릴리스에 "…-test.1.exe" 가 올라갔다.
       #
       # 릴리스 글은 저장소 안의 파일이다 (.github/release-notes.md). 워크플로에
@@ -93,14 +118,25 @@ jobs:
           [ "$src" = "$out" ] || mv "$src" "$out"
           ls -la dist/
           notes=.github/release-notes.md
-          # 같은 태그로 다시 돌리면 새로 만드는 대신 글과 파일을 갈아 끼운다 —
-          # 릴리스 글만 고치려고 태그를 하나 더 파는 건 낭비다
+          # ★ 태그가 **이미 다른 커밋에** 있으면 exe 를 갈아 끼우지 않는다.
+          # 예전엔 같은 태그로 다시 돌리면 태그는 옛 커밋에 둔 채 지금 커밋으로 지은 exe 를
+          # 같은 이름으로 덮어썼다 (test.3 에서 실제로 일어났다). 그러면 "test.6 에서 이랬다"는
+          # 보고를 어느 코드와 맞춰 봐야 할지 알 수 없다. 새 코드는 새 태그로 낸다.
+          tagsha=$(gh api "repos/$REPO/commits/$TAG" --jq .sha 2>/dev/null || true)
           if gh release view "$TAG" --repo "$REPO" >/dev/null 2>&1; then
+            # 같은 태그로 다시 돌리면 글을 갈아 끼운다 — 릴리스 글만 고치려고 태그를 하나 더 파는 건 낭비다
             gh release edit "$TAG" --repo "$REPO" \
               --title "SKRE 오버레이 $TAG — 시험판" \
               --notes-file "$notes" \
               --prerelease
-            gh release upload "$TAG" "$out" --repo "$REPO" --clobber
+            if [ -n "$tagsha" ] && [ "$tagsha" != "$TARGET" ]; then
+              echo "::warning::태그 $TAG 는 ${tagsha::7} 에 있다 (지금 ${TARGET::7}). 글만 고치고 exe 는 그대로 둔다 — 새 코드는 새 태그로 내세요."
+            else
+              gh release upload "$TAG" "$out" --repo "$REPO" --clobber
+            fi
+          elif [ -n "$tagsha" ] && [ "$tagsha" != "$TARGET" ]; then
+            echo "::error::태그 $TAG 가 이미 다른 커밋(${tagsha::7})에 있다 — 지금 커밋(${TARGET::7})으로 지은 exe 를 그 태그로 낼 수 없다. 새 태그를 쓰세요."
+            exit 1
           else
             gh release create "$TAG" "$out" \
               --repo "$REPO" \

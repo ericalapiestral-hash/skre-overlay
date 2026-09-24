@@ -580,7 +580,7 @@ tesseract는 **없앴다.** 76MB와 첫 실행 1분 다운로드, asar·워커 �
 ```bash
 npm install
 npm start          # 실행
-npm test           # 단위 + 전투 시나리오 + 부팅 스모크 + 화면 시험 (366개)
+npm test           # 단위 + 전투 시나리오 + 부팅 스모크 + 화면 시험 (369개)
 npm run typecheck  # JSDoc 기반 타입 검사 (빌드 단계 없음)
 npm run check      # typecheck + test
 npm run doctor     # 도감을 어디서 찾았고 몇 개 읽었는지 (화면 없이)
@@ -610,13 +610,15 @@ src/
     follower.js   턴 추적기 — 연출·밀림·재시작을 견디며 단계를 따라간다
     steps.js      도감 본문 → 단계
     tracker.js    라운드 나누기 도우미
-    regions.js    턴 표시가 화면 어디에 있는지 (파괴신 기본 위치)
+    regions.js    턴 표시가 화면 어디에 있는지 (파괴신 기본 위치 · 저장된 이름 풀기)
+    buildInfo.js  몇 번째 판인지 (CI 가 exe 에 심는다 — 기록·덤프·설정 화면에 찍힌다)
     capture.js    어느 모니터를 캡처할지 (기본 위치로 시작하면 주 모니터)
     notionDoc.js  긁어 온 페이지 나무 → 도감(builds.json)과 같은 모양
     templates.json
   preload/      contextBridge 통로
   renderer/     화면 (overlay · picker)
 tools/          make-templates · make-fixtures · bench-reader · tune-reader · tune-slash · replay
+                (measure-slash 는 원본 크기로 재던 옛 계측이다 — 문턱을 고르는 데 쓰지 말 것)
 test/           단위 테스트 + fixtures/digits.json.gz + scenarios/*.json (전투 시나리오)
                 + helpers/e2e-main.js (가짜 게임 화면을 까는 화면 시험)
 ```
@@ -735,9 +737,25 @@ node tools/replay.js 기록.json --scenario "이름" > test/scenarios/real-01.js
 - **스킬 순서를 못 읽은 빌드를 숨기지 말 것.** 그게 "빌드가 안 보인다"의 원인이었다.
 - **포장하면 `__dirname`이 app.asar 안이 된다.** 도감 경로를 상대경로로 되돌리지 말 것
   (`catalog.js`의 `candidatePaths`가 exe 자리를 따로 잡는다).
-- **exe를 공개된 곳에 올리지 말 것.** 도감은 길드 내부 자료다. `builds.json`과 `data/`는
-  `.gitignore`에 있다. 저장소가 공개라 **GitHub 릴리스도 공개된 곳이다** — 워크플로
-  (`.github/workflows/build.yml`)가 exe를 짓기만 하고 artifact로 남기는 이유가 이것이다.
+- **시험판 exe 는 공개 사전 릴리스로 올린다** — 쓰는 사람이 직접 정했다("공개로 해").
+  워크플로(`.github/workflows/build.yml`)가 Actions 에서 태그를 넣고 돌리면 윈도우에서 지어
+  바로 올린다. **그래도 되는 이유는 exe 에 도감이 없기 때문이고, 그걸 보장하는 건
+  `.gitignore` 가 아니라 `package.json` 의 `build.files`(`src/**/*` · `package.json`)다.**
+  electron-builder 는 `.gitignore` 를 안 본다. 이 규칙을 넓히지 말 것 — `test/packaging.test.js`
+  가 지킨다. 도감(`builds.json`·`data/`)·노션 주소·[페이지 저장] 덤프·전투 기록은
+  저장소에도 릴리스에도 올리지 않는다. (예전 문서는 "공개된 곳에 올리지 말 것, artifact 만
+  남긴다"고 적고 있어서 워크플로와 정반대를 말했다 — 믿고 되돌리면 사람의 결정을 뒤집는다.)
+- **몇 번째 판인지 exe 에 심는다**(`-c.extraMetadata.skreBuild=태그+커밋`, `shared/buildInfo.js`).
+  package.json 의 version 은 늘 0.9.0 이라 안 심으면 받은 전투 기록이 어느 판에서 나왔는지
+  모른다. 기록(`meta.app`)·노션 덤프·설정 화면·`--doctor` 에 찍히고, `replay.js` 가 지금
+  코드와 견줘 보여준다. 손으로 띄우면 `0.9.0-dev` 다.
+- **새 코드는 새 태그로 낸다.** 태그가 이미 다른 커밋에 있으면 워크플로가 exe 를 안 갈아
+  끼운다(글만 고친다). 예전엔 태그는 옛 커밋에 둔 채 새 exe 를 같은 이름으로 덮어써서
+  "test.3 에서 이랬다"를 어느 코드와 맞춰 볼지 알 수 없게 됐다.
+- **CI 는 테스트를 한 번만, `pipefail` 로 돌리고 건너뛴 게 있으면 실패로 친다.** 예전엔 두 번
+  돌렸는데 두 번째의 실패는 `tee` 에 가려졌고, 요약이 안 찍히고 죽으면 "건너뜀 0개"로
+  통과했다. 체크아웃에는 토큰을 안 남긴다(`persist-credentials: false`) — 릴리스 잡은 쓰기
+  권한인데, 곧이은 `npm ci` 의 설치 스크립트가 그걸 읽을 수 있었다.
 - **포터블 exe 빌드는 오래 걸린다 (7z 최대 압축).** 마지막 `building target=portable`
   줄에서 몇 분씩 아무 소식이 없는 게 정상이다. `.7z` 파일 크기도 안 늘어난다 — 7z가
   마지막에 몰아 쓰기 때문이다. **멈춘 줄 알고 죽이지 말 것.** 죽이면 다음 실행이

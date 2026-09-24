@@ -7,6 +7,7 @@
 
 const { contextBridge, ipcRenderer } = require('electron');
 const { PRESETS, resolveRegion } = require('../shared/regions');
+const { BUILD } = require('../shared/buildInfo');
 
 /** 메인 → 렌더러 알림. 해제 함수를 돌려준다 */
 function on(channel, handler) {
@@ -16,6 +17,10 @@ function on(channel, handler) {
 }
 
 contextBridge.exposeInMainWorld('overlay', {
+  app: {
+    /** 몇 번째 판인지 — 설정 화면에 띄운다 (전투 기록에도 같은 값이 찍힌다) */
+    build: BUILD,
+  },
   catalog: {
     load: () => ipcRenderer.invoke('catalog:load'),
     /** 스킬 순서를 못 읽은 빌드의 도감 본문 — 필요할 때만 받아 온다 */

@@ -19,6 +19,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { createFollower } = require('../src/shared/follower');
 const { readTurn, loadTemplates, CROP_TARGET_HEIGHT } = require('../src/shared/turnReader');
+const { BUILD } = require('../src/shared/buildInfo');
 
 /**
  * 프레임을 기록 모양으로 맞춘다. 손으로 쓴 시나리오(test/scenarios/)는 프레임이 숫자·null 이고
@@ -182,6 +183,8 @@ function main(argv) {
   const steps = rec.steps || [];
   console.log(`기록: ${rec.name || path.basename(file)}`);
   if (rec.meta && rec.meta.build) console.log(`빌드: ${rec.meta.build}`);
+  // 어느 판에서 기록했는지 — 지금 코드와 다르면 "(그때는 N)" 차이는 버그가 아니라 판 차이일 수 있다
+  if (rec.meta && rec.meta.app) console.log(`기록한 판: ${rec.meta.app} (지금 코드: ${BUILD})`);
   console.log(
     `단계 ${steps.length}개 · 프레임 ${(rec.frames || []).length}개 · 표본 ${(rec.samples || []).length}장`,
   );

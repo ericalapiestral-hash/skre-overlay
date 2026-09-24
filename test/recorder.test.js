@@ -479,3 +479,10 @@ test('도감 파일만 다시 읽히면(단계 그대로) 아무것도 안 지�
   const changed = engine.setFlow([GROUPS[0]], {}, { keepIndex: true });
   assert.strictEqual(changed.same, false);
 });
+
+test('판 표시 — CI 가 심은 값이 있으면 그것, 없으면 dev', () => {
+  const { buildStamp } = require('../src/shared/buildInfo');
+  assert.strictEqual(buildStamp({ version: '0.9.0', skreBuild: 'v0.9.0-test.7+abc1234' }), 'v0.9.0-test.7+abc1234');
+  assert.strictEqual(buildStamp({ version: '0.9.0' }), '0.9.0-dev');
+  assert.strictEqual(buildStamp({ version: '0.9.0', skreBuild: '  ' }), '0.9.0-dev');
+});
