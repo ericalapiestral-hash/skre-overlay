@@ -1,0 +1,158 @@
+{
+  "name": "리셋 빌드 — 1라운드 도중에 전투가 끝나고 다음 전투가 시작된다",
+  "why": "P6b. 보스가 1라운드 6턴에 죽어 결과 화면이 뜬다(#21 쉬기 시작). 6초 쉬고 다음 전투의 0턴이 나온다(#81, 긴 쉼 뒤 첫 읽기). 새 전투는 늘 1라운드부터다 — 재시작(P6)으로 봐서 처음(0)으로 가야 한다. 예전엔 이 라운드 뒤가 리셋 경계라 P6이 꺼지고 P5가 걸려 2라운드 첫 단계(3)로 갔고, 그 뒤로 한 라운드씩 어긋나 따라갔다.",
+  "build": "reset",
+  "steps": [
+    {
+      "turn": 0,
+      "label": "1라운드"
+    },
+    {
+      "turn": 4,
+      "label": "1라운드"
+    },
+    {
+      "turn": 8,
+      "label": "1라운드"
+    },
+    {
+      "turn": 0,
+      "label": "2라운드"
+    },
+    {
+      "turn": 4,
+      "label": "2라운드"
+    },
+    {
+      "turn": 8,
+      "label": "2라운드"
+    },
+    {
+      "turn": 0,
+      "label": "3라운드"
+    },
+    {
+      "turn": 4,
+      "label": "3라운드"
+    }
+  ],
+  "start": 0,
+  "frames": [
+    0,
+    1,
+    2,
+    3,
+    5,
+    6,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    {
+      "v": null,
+      "rest": true
+    },
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    {
+      "v": 0,
+      "ended": true
+    },
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    0,
+    1,
+    2
+  ],
+  "expect": [
+    {
+      "by": 5,
+      "index": 2
+    },
+    {
+      "from": 6,
+      "to": 86,
+      "hold": 2
+    },
+    {
+      "at": 87,
+      "index": 0
+    },
+    {
+      "at": 90,
+      "index": 1
+    }
+  ]
+}

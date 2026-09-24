@@ -287,3 +287,195 @@ test('기록 프레임의 시각이 고르지 않아도 재생된다', () => {
   const asIfEven = { ...uneven, frames: uneven.frames.map((f) => ({ v: f.v })) };
   assert.deepStrictEqual(run(asIfEven).map((x) => x.index), [0, 0, 0]);
 });
+
+test('못 읽은 표본은 **최근 것**이 남는다 — 로비에서 켜 둬도 전투 장면이 남는다', () => {
+  // ★ 예전엔 먼저 온 순서대로 상한까지 담고 안 뺐다. [자동]을 로딩·로비에서 켜 두면
+  // 40장이 로딩 화면 4초에 다 차서, 정작 전투 중에 못 읽은 장면은 한 장도 안 남았다.
+  const r = createRecorder();
+  r.setFlow([{ turn: 0, label: '1R' }]);
+  const lobby = new Uint8Array(64 * 40).fill(10);
+  const battle = new Uint8Array(64 * 40).fill(200);
+  let t = 0;
+  for (let i = 0; i < 300; i += 1, t += 100) r.frame(result(null, 0, 'hidden'), { gray: lobby, w: 64, h: 40, now: t });
+  const battleFrom = t;
+  for (let i = 0; i < 300; i += 1, t += 100) r.frame(result(null, 0, 'hidden'), { gray: battle, w: 64, h: 40, now: t });
+  const unread = r.dump().samples.filter((s) => s.kind === 'unread');
+  assert.strictEqual(unread.length, SAMPLE_CAPS.unread);
+  assert.ok(
+    unread.every((s) => s.t >= battleFrom - r.dump().frames[0].t),
+    '로비 그림이 남아 있다 — 최근 장면이 밀려났다',
+  );
+  // 띄엄띄엄 담는다 — 같은 연출의 거의 같은 그림만 남지 않게
+  const gaps = unread.slice(1).map((s, i) => s.t - unread[i].t);
+  assert.ok(gaps.every((g) => g >= 500), `표본 간격이 너무 좁다: ${gaps.slice(0, 5).join(', ')}ms`);
+});
+
+test('쉬는 중(결과 화면)의 그림은 표본으로 안 담는다', () => {
+  const r = createRecorder();
+  r.setFlow([{ turn: 0, label: '1R' }]);
+  const gray = new Uint8Array(64 * 40).fill(30);
+  for (let i = 0; i < 50; i += 1) {
+    r.frame({ ...result(null, 0, 'hidden'), resting: true }, { gray, w: 64, h: 40, now: i * 1000 });
+  }
+  assert.strictEqual(r.sampleCount, 0);
+});
+
+test('되돌려 보는 시작 위치는 첫 프레임을 넣기 **전**의 단계다', () => {
+  // ★ 예전엔 첫 프레임의 i 를 썼다 — 넣은 **뒤**의 단계이고, [자동]을 켠 메모로 시작하면 -1
+  // 이라 0단계에서 재생해 실제 위치(예: 3)를 잃었다.
+  const r = createRecorder();
+  const steps = [0, 4, 8, 12, 16].map((turn) => ({ turn, label: '1R' }));
+  r.setFlow(steps, {}, 3);
+  r.note('자동 껐다 켬', 0, { reset: true, index: 3 });
+  r.frame(result(13, 4), { now: 100 });
+  const d = r.dump();
+  assert.strictEqual(d.start, 3);
+  assert.strictEqual(d.frames[0].i, 3, '메모에도 그때의 단계를 적는다');
+});
+
+test('고리 버퍼가 앞을 버리면 시작 위치를 옮기고 잘렸다고 적는다', () => {
+  const r = createRecorder({ maxFrames: 5 });
+  r.setFlow([0, 4, 8, 12, 16, 20].map((turn) => ({ turn, label: '1R' })), {}, 0);
+  for (let i = 0; i < 9; i += 1) r.frame(result(i * 2, Math.floor(i / 2)), { now: i * 100 });
+  const d = r.dump();
+  assert.strictEqual(d.trimmed, true);
+  assert.strictEqual(d.start, 1, '버린 마지막 프레임(#3) 뒤의 단계에서 시작해야 한다');
+  assert.strictEqual(d.frames[0].t, 0, '시각도 남은 첫 프레임 기준');
+});
+
+test('신뢰도는 반올림하지 않는다 — 흐림과 또렷함의 경계가 재생에서 바뀌지 않게', () => {
+  // 0.8595~0.86 사이 값이 엔진에서는 흐림(0.86 미만)이었는데 셋째 자리로 반올림하면 0.86 이
+  // 되어 재생에서만 또렷함이 됐다
+  const r = createRecorder();
+  r.setFlow([{ turn: 0, label: '1R' }]);
+  r.frame(result(5, 0, 'weak', 0.8597), { now: 0 });
+  const f = r.dump().frames[0];
+  assert.ok(f.c !== undefined && f.c < 0.86, `저장된 신뢰도 ${f.c}`);
+});
+
+test('되돌림 뒤 간격이 길어도 시나리오 러너와 재생 도구가 같은 궤적을 낸다', () => {
+  // ★ 러너만 되돌림 칸에 "가려짐" 한 프레임을 넣고 있었다. 그러면 되돌림부터 다음 읽기까지가
+  // 가려진 시간으로 잡혀, 리셋 빌드의 라운드 중간 전환(P5 — 앞에 500ms 가려짐)이 러너에서만
+  // 걸렸다. 받은 기록을 시나리오로 잠그면 실제와 다른 궤적을 자물쇠로 걸게 된다.
+  const rec = {
+    steps: [
+      { turn: 0, label: '1라운드' },
+      { turn: 4, label: '1라운드' },
+      { turn: 8, label: '1라운드' },
+      { turn: 0, label: '2라운드' },
+      { turn: 4, label: '2라운드' },
+    ],
+    start: 1,
+    frames: [
+      { t: 0, v: 3, c: 0.95, i: 1, why: 'same' },
+      { t: 100, v: null, i: 1, why: 'note', note: '자동 껐다 켬', reset: true },
+      { t: 800, v: 0, c: 0.95, i: 1, why: 'hold' },
+      { t: 900, v: 0, c: 0.95, i: 1, why: 'hold' },
+      { t: 1000, v: 0, c: 0.95, i: 1, why: 'hold' },
+    ],
+  };
+  const played = replay(rec).filter((x) => x.why !== 'note').map((x) => x.index);
+  const ran = run(toScenario(rec, '되돌림 뒤 간격'))
+    .filter((x) => !(x.frame && x.frame.reset))
+    .map((x) => x.index);
+  assert.deepStrictEqual(ran, played);
+  assert.deepStrictEqual(played, [1, 1, 1, 1], '되돌림은 가려짐이 아니다 — 라운드가 넘어가면 안 된다');
+});
+
+test('재생 도구에 손으로 쓴 시나리오를 넣어도 돈다', () => {
+  // 예전엔 프레임이 숫자·null 이면 `f.set` 을 읽다 죽었다
+  const scenario = require('./scenarios/misread-05.json');
+  const trace = replay(scenario).map((x) => x.index);
+  assert.deepStrictEqual(trace, run(scenario).map((x) => x.index));
+});
+
+test('한 바퀴 — 길게 쉬고 다음 전투가 시작되면 처음으로, 기록·재생도 같다', { skip: !loadFixtures() }, () => {
+  // P6b. 리셋 빌드 1라운드 도중에 전투가 끝나고(결과 화면) 6초 쉰 뒤 다음 전투의 0턴이 나온다.
+  const data = loadFixtures();
+  const pick = (v) => {
+    const s = data.samples.find((x) => x.value === v && x.height === 44 && !x.invert);
+    return s ? { gray: new Uint8Array(Buffer.from(s.gray, 'base64')), w: s.w, h: s.h } : null;
+  };
+  const four = pick(4);
+  const zero = pick(0);
+  assert.ok(four && zero);
+  const still = { gray: new Uint8Array(four.w * four.h).fill(28), w: four.w, h: four.h };
+  const RESET_GROUPS = [
+    { round: 1, variants: [{ label: '1라운드', steps: [{ turn: 0, text: '가' }, { turn: 4, text: '나' }, { turn: 8, text: '다' }] }] },
+    { round: 2, variants: [{ label: '2라운드', steps: [{ turn: 0, text: '라' }, { turn: 4, text: '마' }] }] },
+  ];
+
+  let t = 0;
+  const engine = createEngine({ templates: TEMPLATES, now: () => (t += 100) });
+  engine.setFlow(RESET_GROUPS, {});
+  const rec = createRecorder({ now: () => t });
+  rec.setFlow(engine.flow, { build: '시험' }, engine.index);
+  const live = [];
+  const feed = (f) => {
+    const r = engine.feed(f.gray, f.w, f.h);
+    rec.frame(r, { gray: f.gray, w: f.w, h: f.h, now: t });
+    live.push(r.index);
+    return r;
+  };
+  for (let i = 0; i < 4; i += 1) feed(four); // 1라운드 4턴
+  const before = engine.index;
+  assert.strictEqual(before, 1);
+  for (let i = 0; i < 80; i += 1) feed(still); // 결과 화면 8초 (1.5초 뒤부터 쉼)
+  assert.strictEqual(engine.resting, true);
+  const first = feed(zero);
+  assert.strictEqual(first.ended, true, '길게 쉬고 난 첫 읽기를 "전투 끝"으로 알려야 한다');
+  for (let i = 0; i < 8; i += 1) feed(zero);
+  assert.strictEqual(engine.index, 0, `다음 전투는 처음부터다 — ${engine.index}단계(다음 라운드)로 갔다`);
+
+  const dumped = JSON.parse(JSON.stringify(rec.dump()));
+  assert.ok(dumped.frames.some((f) => f.ended), '기록에 "전투 끝"이 남아야 한다');
+  assert.deepStrictEqual(replay(dumped).map((x) => x.index), live, '재생 결과가 실제와 다르다');
+  assert.deepStrictEqual(run(toScenario(dumped, '전투 끝')).map((x) => x.index), live);
+});
+
+test('짧게 쉰 것은 전투 끝이 아니다 — 라운드 전환으로 따라간다', { skip: !loadFixtures() }, () => {
+  const data = loadFixtures();
+  const pick = (v) => {
+    const s = data.samples.find((x) => x.value === v && x.height === 44 && !x.invert);
+    return s ? { gray: new Uint8Array(Buffer.from(s.gray, 'base64')), w: s.w, h: s.h } : null;
+  };
+  const eight = /** @type {NonNullable<ReturnType<typeof pick>>} */ (pick(8));
+  const zero = /** @type {NonNullable<ReturnType<typeof pick>>} */ (pick(0));
+  assert.ok(eight && zero);
+  const still = { gray: new Uint8Array(eight.w * eight.h).fill(28), w: eight.w, h: eight.h };
+  const RESET_GROUPS = [
+    { round: 1, variants: [{ label: '1라운드', steps: [{ turn: 0, text: '가' }, { turn: 4, text: '나' }, { turn: 8, text: '다' }] }] },
+    { round: 2, variants: [{ label: '2라운드', steps: [{ turn: 0, text: '라' }, { turn: 4, text: '마' }] }] },
+  ];
+  let t = 0;
+  const engine = createEngine({ templates: TEMPLATES, now: () => (t += 100) });
+  engine.setFlow(RESET_GROUPS, {});
+  for (let i = 0; i < 4; i += 1) engine.feed(eight.gray, eight.w, eight.h);
+  for (let i = 0; i < 25; i += 1) engine.feed(still.gray, still.w, still.h); // 2.5초 — 쉬긴 했지만 짧다
+  assert.strictEqual(engine.resting, true);
+  const r = engine.feed(zero.gray, zero.w, zero.h);
+  assert.strictEqual(r.ended, false);
+  for (let i = 0; i < 3; i += 1) engine.feed(zero.gray, zero.w, zero.h);
+  assert.strictEqual(engine.index, 3, '라운드 전환이면 다음 라운드 첫 단계로 가야 한다');
+});
+
+test('도감 파일만 다시 읽히면(단계 그대로) 아무것도 안 지운다', { skip: !loadFixtures() }, () => {
+  // ★ 예전엔 도감이 갱신될 때마다 추적기·최대 턴·전투끝을 새로 만들어서, 결과 화면에서 쉬던
+  // 인식이 깨어나고 (index.js 가) 전투 기록을 통째로 지웠다.
+  const data = loadFixtures();
+  const s = data.samples.find((x) => x.value === 8 && x.height === 44 && !x.invert);
+  const eight = { gray: new Uint8Array(Buffer.from(s.gray, 'base64')), w: s.w, h: s.h };
+  const still = { gray: new Uint8Array(eight.w * eight.h).fill(28), w: eight.w, h: eight.h };
+  let t = 0;
+  const engine = createEngine({ templates: TEMPLATES, now: () => (t += 100) });
+  engine.setFlow(GROUPS, {});
+  for (let i = 0; i < 4; i += 1) engine.feed(eight.gray, eight.w, eight.h);
+  for (let i = 0; i < 30; i += 1) engine.feed(still.gray, still.w, still.h);
+  assert.strictEqual(engine.resting, true);
+  const again = engine.setFlow(GROUPS, {}, { keepIndex: true });
+  assert.strictEqual(again.same, true);
+  assert.strictEqual(engine.resting, true, '도감이 다시 읽혔다고 쉬던 인식이 깨어났다');
+  // 단계가 바뀌면(분기 선택) 새로 시작한다 — 설계대로
+  const changed = engine.setFlow([GROUPS[0]], {}, { keepIndex: true });
+  assert.strictEqual(changed.same, false);
+});

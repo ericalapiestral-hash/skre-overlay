@@ -16,6 +16,11 @@ function run(scenario) {
     // 실제 게임에서 기록한 시나리오는 프레임 간격이 고르지 않다 — 프레임마다 t를
     // 들고 온다. 손으로 쓴 시나리오는 없으므로 100ms 간격으로 친다.
     const at = frame && typeof frame === 'object' && typeof frame.t === 'number' ? frame.t : i * dt;
+    // {"skip": true} — 아무 일도 없는 칸 (doubled 가 쓴다)
+    if (frame && typeof frame === 'object' && frame.skip) {
+      trace.push({ i, frame, index: follower.index, why: 'skip', turn: follower.turn });
+      return;
+    }
     // {"set": n} — 사용자가 이 프레임에 단계를 손으로 옮겼다 (P9). 읽기는 없다.
     if (frame && typeof frame === 'object' && typeof frame.set === 'number') {
       const index = follower.setIndex(frame.set);
@@ -27,7 +32,20 @@ function run(scenario) {
     if (frame && typeof frame === 'object' && frame.rest) follower.reset();
     // {"reset": true} — 이 프레임에서 자동을 껐다 켰다 (engine:reset). 엔진이 읽기
     // 기억을 지우므로 여기서도 지운다.
-    if (frame && typeof frame === 'object' && frame.reset) follower.reset();
+    if (frame && typeof frame === 'object' && frame.reset) {
+      follower.reset();
+      // ★ 읽기가 없으면 **프레임을 넣지 않는다.** 엔진도 되돌림 때는 프레임을 안 넣는다
+      // (engine:reset 은 reset 만 한다 · tools/replay.js 도 같다). 예전엔 여기서 가려짐 한
+      // 프레임을 넣어서, 그 뒤 첫 프레임까지가 "가려진 시간"으로 잡혀 리셋 빌드의 라운드
+      // 전환(P5, 500ms 가려짐)이 러너에서만 걸렸다 — 실제와 다른 궤적을 자물쇠로 걸게 된다.
+      if (frame.v === null || frame.v === undefined) {
+        trace.push({ i, frame, index: follower.index, why: 'reset', turn: follower.turn });
+        return;
+      }
+    }
+    // {"ended": true} — 길게 쉬고 난 뒤 처음 읽힌 프레임이다 (P6b). 엔진이 이 프레임을
+    // 넣기 전에 "전투가 끝났다"를 알린다 (engine.feed).
+    if (frame && typeof frame === 'object' && frame.ended) follower.battleOver();
     let reading = null;
     if (typeof frame === 'number') reading = { value: frame, confidence: 0.95 };
     else if (frame && typeof frame === 'object' && frame.v !== null && frame.v !== undefined) {
@@ -37,6 +55,46 @@ function run(scenario) {
     trace.push({ i, frame, index: r.index, why: r.why, turn: r.turn });
   });
   return trace;
+}
+
+/**
+ * 시나리오를 **프레임마다 두 장씩**(간격 절반) 으로 늘린다 — 인식 주기를 50ms 로 낮춘 경우.
+ *
+ * 추적기의 "몇 프레임 이어져야"는 전부 ms 로도 같이 재야 한다. 프레임 수만 세면 주기를
+ * 반으로 줄였을 때 100ms 짜리 오독 한 번이 두 번 찍혀 조건을 채운다 — 실제로 P5·P9b·흐린
+ * 읽기가 그랬고, 50ms 에서 시나리오 76개 중 23개가 깨졌다. 기대의 프레임 번호도 따라
+ * 옮긴다 (k번째 → 둘째 장 2k+1).
+ * 사건(set·rest·reset·ended)은 첫 장에만 싣고, 둘째 장은 같은 읽기만 한 번 더 보여준다.
+ */
+function doubled(scenario) {
+  const dt = (scenario.dt || 100) / 2;
+  const frames = [];
+  scenario.frames.forEach((f, i) => {
+    const t0 = f && typeof f === 'object' && typeof f.t === 'number' ? f.t : i * dt * 2;
+    const first = f && typeof f === 'object' ? { ...f, t: t0 } : { v: f, t: t0 };
+    let again;
+    if (f && typeof f === 'object') {
+      const { set, rest, reset, ended, ...plain } = f;
+      // 읽기 없는 사건(손으로 옮김·읽기 없는 되돌림)은 둘째 장에 아무것도 안 넣는다 —
+      // 원래도 그 칸에는 추적기에 들어간 게 없다. 손으로 옮김을 두 번 하면 P9b 가 깨진다.
+      const eventOnly = typeof set === 'number' || (reset && (f.v === null || f.v === undefined));
+      again = eventOnly ? { skip: true, t: t0 + dt } : { ...plain, t: t0 + dt };
+    } else {
+      again = { v: f, t: t0 + dt };
+    }
+    frames.push(first);
+    frames.push(again);
+  });
+  const map = (k) => 2 * k + 1;
+  const expect = (scenario.expect || []).map((e) => {
+    const x = { ...e };
+    if (x.by !== undefined) x.by = map(x.by);
+    if (x.at !== undefined) x.at = map(x.at);
+    if (x.from !== undefined) x.from = 2 * x.from;
+    if (x.to !== undefined) x.to = map(x.to);
+    return x;
+  });
+  return { ...scenario, dt, frames, expect };
 }
 
 /** 궤적을 한 줄씩 — 실패 메시지용 */
@@ -79,7 +137,15 @@ function check(scenario, trace) {
       // k번째 프레임까지는(포함) index가 n이어야 한다
       if (at(e.by) !== e.index) problems.push(`#${e.by}까지 단계 ${e.index}여야 하는데 ${at(e.by)}`);
     } else if (e.at !== undefined) {
-      if (at(e.at) !== e.index) problems.push(`#${e.at} 뒤 단계 ${e.index}여야 하는데 ${at(e.at)}`);
+      if (e.index !== undefined && at(e.at) !== e.index) {
+        problems.push(`#${e.at} 뒤 단계 ${e.index}여야 하는데 ${at(e.at)}`);
+      }
+      // 믿는 턴 — 상태줄·턴 표시가 이 값을 보여준다
+      if (e.turn !== undefined) {
+        const got = trace[e.at] ? trace[e.at].turn : undefined;
+        if (got !== e.turn) problems.push(`#${e.at} 뒤 믿는 턴이 ${e.turn}이어야 하는데 ${got}`);
+        at(e.at);
+      }
     } else if (e.from !== undefined) {
       for (let i = e.from; i <= e.to; i += 1) {
         const got = at(i);
@@ -106,4 +172,4 @@ function check(scenario, trace) {
   return problems;
 }
 
-module.exports = { run, check, dump };
+module.exports = { run, check, dump, doubled };

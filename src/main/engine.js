@@ -16,22 +16,32 @@ const { createBattleEndWatch } = require('../shared/battleEnd');
 const { flatten } = require('../shared/steps');
 
 /**
+ * 이만큼 넘게 쉬었다가 다시 턴이 보이면 **전투가 끝나고 새 전투가 시작된 것**으로 본다 (P6b).
+ * 결과 화면·로비·로딩은 보통 몇 초 넘게 걸린다. 짧은 쉼은 라운드 전환 연출이 잠깐 멈춘 걸
+ * 결과 화면으로 잘못 봤을 수 있어서 그대로 둔다 (그땐 다음 라운드로 넘어가는 게 맞다).
+ */
+const LONG_REST_MS = 5000;
+
+/**
  * @typedef {{turn: number, label: string}} FlowStep
  * @typedef {{index: number, moved: boolean, turn: number|null, raw: number|null,
  *            confidence: number, hidden: boolean, hiddenMs: number,
  *            why: string, max: number|null, dropped: number|null,
- *            resting: boolean, restWhy: string}} FeedResult
+ *            resting: boolean, restWhy: string, ended: boolean}} FeedResult
  *   max     지금 믿고 있는 최대 턴 (`16 / 70` 의 70). 모르면 null
  *   dropped 최대 턴과 안 맞아서 **버린** 값. 상태줄에 왜 멈췄는지 보여주려고 둔다
  *   resting 전투가 끝난 것 같아 **쉬는 중**. 화면은 이때 인식 주기를 늦춘다
  *           (shared/battleEnd.js). 턴이 다시 보이면 스스로 풀린다
  *   restWhy 왜 쉬는지 — 'still'(화면이 멈춰 있다) | 'blind'(오래 못 읽었다)
+ *   ended   이 프레임이 **길게 쉬고 난 뒤 처음 읽힌** 프레임이다 — 추적기에 "전투가
+ *           끝났다"를 알렸다 (P6b). 기록에도 적는다 (되돌려 볼 때 같이 알려야 한다)
  */
 
 /**
  * @param {{templates?: any[], follower?: object, maxTurn?: object, battleEnd?: object,
- *          now?: () => number}} [options]
+ *          longRestMs?: number, now?: () => number}} [options]
  *   now 시계 — 테스트에서 프레임 시각을 직접 넣으려고 바꿔 끼울 수 있다
+ *   longRestMs 이만큼 넘게 쉬었으면 전투가 끝난 것으로 본다 (LONG_REST_MS)
  */
 function createEngine(options = {}) {
   const { templates = [], follower: followerOptions } = options;
@@ -45,6 +55,9 @@ function createEngine(options = {}) {
   const maxTurn = createMaxTurnWatch(options.maxTurn);
   // 전투가 끝나면(결과 화면) 쉰다 — 턴이 다시 보이면 스스로 깨어난다
   const endWatch = createBattleEndWatch(options.battleEnd);
+  const longRestMs = options.longRestMs ?? LONG_REST_MS;
+  /** @type {number|null} 쉬기 시작한 시각 */
+  let restSince = null;
 
   /** 기본 대조표 + 사용자가 가르친 대조표 */
   function setTemplates(builtin, userJson) {
@@ -63,17 +76,32 @@ function createEngine(options = {}) {
    *
    * @param {any[]} groups 도감에서 읽은 변형 그룹
    * @param {Record<number, number>} picks 그룹별 선택
-   * @returns {{steps: Array<{turn:number,text:string,label:string}>, index: number}}
+   * @returns {{steps: Array<{turn:number,text:string,label:string}>, index: number, same: boolean}}
+   *   same 단계가 그대로라 아무것도 안 지웠다 (기록도 이어 가면 된다)
    */
   function setFlow(groups, picks = {}, { keepIndex = false } = {}) {
     const steps = flatten(Array.isArray(groups) ? groups : [], picks || {});
+    // ★ 도감 파일이 다시 읽혔을 뿐 **단계가 그대로면**(턴·라운드가 같으면) 아무것도 안 지운다.
+    // 예전엔 도감이 갱신될 때마다(길드봇이 쓰거나 [노션에서 받기]) 추적기·최대 턴·전투끝을
+    // 새로 만들어서, 결과 화면에서 쉬던 인식이 깨어나고 전투 기록이 통째로 지워졌다.
+    // 글(행동)만 바뀐 것은 새로 받는다 — 추적기는 턴과 라운드만 본다.
+    if (keepIndex && sameShape(steps, flow)) {
+      flow = steps;
+      return { steps, index: follower.index, same: true };
+    }
     const index = keepIndex ? Math.max(0, Math.min(follower.index, steps.length - 1)) : 0;
     flow = steps;
     follower = createFollower(flow, { ...followerOptions, index: steps.length ? index : 0 });
     // 빌드를 바꿨으면 다른 전투일 수 있다 — 최대 턴도 처음부터 다시 본다
     maxTurn.reset();
     endWatch.reset();
-    return { steps, index: follower.index };
+    restSince = null;
+    return { steps, index: follower.index, same: false };
+  }
+
+  /** 턴과 라운드가 똑같은가 — 추적기가 보는 것은 이 둘뿐이다 */
+  function sameShape(a, b) {
+    return a.length === b.length && a.every((s, i) => s.turn === b[i].turn && s.label === b[i].label);
   }
 
   /**
@@ -99,6 +127,7 @@ function createEngine(options = {}) {
     follower.reset();
     maxTurn.reset();
     endWatch.reset();
+    restSince = null;
   }
 
   /**
@@ -127,6 +156,15 @@ function createEngine(options = {}) {
     if (rest.entered) {
       follower.reset();
       maxTurn.reset();
+      restSince = now;
+    }
+    // 쉬다가 턴이 다시 보였다. **길게 쉬었으면 전투가 끝나고 새 전투가 시작된 것**이다 —
+    // 추적기에 알려서, 첫 턴 근처 숫자를 "다음 라운드"가 아니라 "처음부터"로 보게 한다 (P6b).
+    let ended = false;
+    if (!rest.over && restSince !== null) {
+      ended = now - restSince >= longRestMs;
+      restSince = null;
+      if (ended) follower.battleOver();
     }
 
     const r = follower.push(trusted, now);
@@ -143,6 +181,7 @@ function createEngine(options = {}) {
       dropped: !verdict.trust && got ? got.value : null,
       resting: rest.over,
       restWhy: rest.why,
+      ended,
     };
   }
 
@@ -173,4 +212,4 @@ function createEngine(options = {}) {
   };
 }
 
-module.exports = { createEngine };
+module.exports = { createEngine, LONG_REST_MS };

@@ -40,8 +40,16 @@ const DEFAULTS = {
   restartFrames: 3,
   /** 재시작으로 볼 숫자: 첫 턴 + 이 값 이하 */
   restartSlack: 1,
-  /** 리셋 라운드 전환에 필요한 프레임 (P5) */
+  /**
+   * 리셋 라운드 전환에 필요한 프레임·시간 (P5 · P9b) — 100ms 프레임이면 2프레임.
+   * **시간도 같이 잰다.** 프레임 수만 세면 인식 주기를 50ms 로 낮췄을 때 100ms 짜리
+   * 오독 한 번이 두 번 찍혀 조건을 채운다 (예전에 그랬다 — 라운드가 450ms 만에 두 번 넘어갔다).
+   */
   resetFrames: 2,
+  resetMs: 100,
+  /** 흐린 읽기를 받아들이려면 같은 값이 이만큼 이어져야 한다 — 100ms 프레임이면 2프레임 */
+  weakFrames: 2,
+  weakMs: 100,
   /** 라운드 중간에 리셋 전환을 믿으려면 그 앞에 이만큼 가려져 있어야 한다 (P5) */
   resetGapMs: 500,
   /** 건너뛴 뒤 되돌릴 수 있는 시간 (P8) */
@@ -132,6 +140,11 @@ function createFollower(steps, options = {}) {
   let jump = null;
   /** 손으로 미리 고른 라운드가 아직 자기 눈금을 안 보여줬다 (P9b) */
   let preselected = false;
+  /**
+   * 엔진이 "전투가 끝났다(길게 쉬었다)"고 알렸다 (P6b). 그 뒤 처음 오는 첫 턴 근처 숫자는
+   * 리셋 경계와 상관없이 재시작으로 본다 — 새 전투는 늘 1라운드부터다.
+   */
+  let afterBattle = false;
 
   const streaks = {
     jump: createStreak(),
@@ -196,10 +209,12 @@ function createFollower(steps, options = {}) {
     gapBefore = hiddenSince !== null ? now - hiddenSince : 0;
     hiddenSince = null;
     if (run && run.value === v) run.frames += 1;
-    else run = { value: v, frames: 1 };
+    else run = { value: v, frames: 1, since: now };
 
     const strong = (reading.confidence ?? 0) >= cfg.strongScore;
-    if (!strong && run.frames < 2) {
+    // 흐린 읽기는 같은 값이 이어져야 받아들인다 — 프레임 수와 **시간을 둘 다** 본다
+    const settled = run.frames >= cfg.weakFrames && now - run.since >= cfg.weakMs;
+    if (!strong && !settled) {
       // 받아들이지 않은 흐린 읽기는 "이 프레임엔 못 읽었다"와 같으므로 가려짐처럼 이어짐을 끊는다.
       // 또렷한 오독 사이에 흐린 프레임이 끼어 있다는 것 자체가 깜빡인다는 증거다 —
       // 안 끊으면 오독 2프레임 + 흐린 1프레임으로 P7의 3프레임을 채워 순간이동한다.
@@ -216,12 +231,35 @@ function createFollower(steps, options = {}) {
     // 안 불린다** — 손으로 라운드 마지막 단계로 옮겨 두면 다음 라운드로 영영 못 넘어갔다.
     // 기준을 못 박지 않는 이유는 따로 있다: P7이 기다리는 동안 오독 값이 기준이 되면
     // 그 뒤 진짜 턴이 전부 "큰 뒤로"가 되어 갇힌다.
+    //
+    // P9c — 기준이 없을 때 **지금 자리에 맞는 값**(이전 단계의 턴 < v ≤ 지금 단계의 턴)은 그대로
+    // 믿는다. 지금 단계는 "다음에 할 행동"이라 보통 실제 턴보다 크다 — 그걸 기준으로 보면 이런
+    // 정상 읽기가 "뒤로" 가서, 3턴보다 멀면 오독 취급(믿는 턴 없음 → "턴 숫자를 찾는 중…"),
+    // 가까우면 "밀림"으로 표시됐다. 단계는 안 움직이므로 P7 이 막으려던 "오독이 기준이 되어
+    // 갇힘"과는 상관없다. 손으로 다른 라운드 첫 단계를 미리 고른 때(P9b)는 그쪽 규칙을 따른다.
+    if (believed === null && !preselected && v < flow[index].turn && v > prevTurn(index)) {
+      believed = v;
+      return out(false, 'sync', v);
+    }
     const base = believed ?? flow[index].turn;
     return v >= base ? forward(v, now, out) : backward(v, base, now, out);
   }
 
+  /**
+   * 지금 단계 바로 앞 단계의 턴 — 같은 눈금일 때만. 리셋 라운드의 첫 단계면 앞 단계는
+   * 다른 눈금(지난 라운드)이라 비교할 수 없다 (-Infinity).
+   */
+  function prevTurn(i) {
+    if (i <= 0) return -Infinity;
+    const s = segmentAt(ranges, i);
+    if (i === ranges[s][0] && s > 0 && resetAfter[s - 1]) return -Infinity;
+    return flow[i - 1].turn;
+  }
+
   function move(target, v, why, out) {
     const moved = target !== index;
+    // 전투가 끝난 뒤 한 번이라도 자리를 잡았으면 그 표시는 쓸모를 다했다 (P6b)
+    afterBattle = false;
     // 크게 뛴 뒤 **평범하게 한 단계 더 나아갔다면** 그 뛰기는 오독이 아니었다.
     // 기록을 지워야 한참 뒤의 오독이 이미 확증된 뛰기를 되돌리지 않는다.
     if (jump && why === 'forward') jump = null;
@@ -319,7 +357,7 @@ function createFollower(steps, options = {}) {
     const starting = preselected && v <= flow[a].turn + cfg.restartSlack;
     streaks.start.tick(starting, now, s);
     if (starting) {
-      if (streaks.start.frames < cfg.resetFrames) return out(false, 'start-wait', v);
+      if (!streaks.start.held(cfg.resetFrames, cfg.resetMs, now)) return out(false, 'start-wait', v);
       preselected = false;
       jump = null;
       clearBackward();
@@ -330,11 +368,15 @@ function createFollower(steps, options = {}) {
     // 라운드 마지막 단계에 있으면 짧게 봐도 되지만, **밀림 범위 안의 값은 빼야 한다** —
     // 다음 라운드가 1턴부터 시작하는 빌드에서는 2턴 밀림 하나가 라운드를 통째로 건너뛴다.
     // 라운드 중간이면(보스가 일찍 죽음) 그 앞에 연출로 가려진 시간이 있어야 한다.
-    const resetting = Boolean(next) && resetAfter[s] && v <= flow[next[0]].turn;
+    //
+    // P6b — 길게 쉬고 난 뒤(전투가 끝남)면 전환이 아니라 **새 전투**다. P5 를 건너뛰고 아래
+    // P6 이 리셋 경계와 상관없이 처음으로 보낸다. 예전엔 리셋 빌드에서 1·2라운드 도중에
+    // 전투가 끝나면 다음 전투의 0턴을 "다음 라운드"로 읽어, 그 뒤로 한 라운드씩 어긋났다.
+    const resetting = !afterBattle && Boolean(next) && resetAfter[s] && v <= flow[next[0]].turn;
     streaks.reset.tick(resetting, now, s, gapBefore);
     if (resetting) {
       const enough =
-        streaks.reset.frames >= cfg.resetFrames &&
+        streaks.reset.held(cfg.resetFrames, cfg.resetMs, now) &&
         ((index === b && back > cfg.pushback) || streaks.reset.gapBefore >= cfg.resetGapMs);
       if (enough) {
         jump = null;
@@ -351,7 +393,7 @@ function createFollower(steps, options = {}) {
     // 라운드에서만) 이어지는 라운드와 리셋 라운드가 섞인 빌드에서 P5도 P6도 못 걸리는
     // 구멍이 생긴다 — 1라운드에서 재시작하면 전투가 끝날 때까지 못 돌아온다.
     const restarting =
-      !resetAfter[s] &&
+      (afterBattle || !resetAfter[s]) &&
       v <= flow[0].turn + cfg.restartSlack &&
       forwardFrom(0, v) < index; // 실제로 뒤로 가는 경우에만 — 아니면 셀 이유가 없다
     streaks.restart.tick(restarting, now);
@@ -405,14 +447,25 @@ function createFollower(steps, options = {}) {
     gapBefore = 0;
     jump = null;
     preselected = false;
+    afterBattle = false;
     streaks.jump.clear();
     clearBackward();
+  }
+
+  /**
+   * P6b — 엔진이 "전투가 끝났다"(길게 쉬었다)고 알린다. 위치는 그대로 두고(오검출이면
+   * 사람이 보던 자리를 잃으면 안 된다), 다음 첫 턴 근처 숫자를 재시작으로 보게만 한다.
+   */
+  function battleOver() {
+    reset();
+    afterBattle = true;
   }
 
   return {
     push,
     setIndex,
     reset,
+    battleOver,
     forwardFrom,
     get index() {
       return index;

@@ -1,4 +1,4 @@
-// 단계 목록을 라운드로 나누는 도우미 — 추적기(follower.js)와 엔진이 같이 쓴다.
+// 단계 목록을 라운드로 나누는 도우미 — 추적기(follower.js)가 쓴다.
 //
 // 턴 숫자 → 단계 이동의 규칙 자체는 여기 없다. 그건 follower.js에 있고,
 // 실제 전투 시나리오(test/scenarios/)로 확인한다.
@@ -24,16 +24,6 @@ function segmentAt(ranges, index) {
   return i < 0 ? 0 : i;
 }
 
-/**
- * 이 빌드에 나오는 턴 숫자 전부 (작은 것부터, 중복 없이).
- *
- * 숫자 인식이 애매할 때 후보를 좁히는 데 쓴다. 게임이 어떤 숫자를 보여줄 수 있는지
- * 우리가 이미 알고 있는데 그걸 안 쓰는 건 아까운 일이다.
- */
-function knownTurns(steps) {
-  const set = new Set();
-  for (const s of steps || []) if (Number.isFinite(s.turn)) set.add(s.turn);
-  return [...set].sort((a, b) => a - b);
-}
-
-module.exports = { segmentRanges, segmentAt, knownTurns };
+// (예전엔 "빌드에 나오는 턴 목록 — 인식 후보로 쓴다"는 knownTurns 가 여기 있었다. 아무도 안
+// 쓰는데 주석이 후보 기능을 되살리라고 권하고 있었다 — CLAUDE.md "후보 — 걷어냈다" 참고. 지웠다.)
+module.exports = { segmentRanges, segmentAt };

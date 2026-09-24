@@ -1,0 +1,99 @@
+{
+  "name": "리셋 빌드 — 짧게 쉰 것은 전투 끝이 아니다 (라운드 전환)",
+  "why": "P6b의 반대편. 1라운드 6턴에 보스가 죽고 라운드 전환 연출이 잠깐 멈춰 있어 엔진이 결과 화면으로 잘못 봤다(#21 쉬기 시작). 1초 만에 0이 나온다 — 긴 쉼이 아니므로 ended 가 없다. 이건 라운드 전환이라 P5로 2라운드 첫 단계(3)로 가야 한다. 짧은 쉼까지 재시작으로 보면 라운드가 넘어갈 때마다 처음으로 돌아간다.",
+  "build": "reset",
+  "steps": [
+    {
+      "turn": 0,
+      "label": "1라운드"
+    },
+    {
+      "turn": 4,
+      "label": "1라운드"
+    },
+    {
+      "turn": 8,
+      "label": "1라운드"
+    },
+    {
+      "turn": 0,
+      "label": "2라운드"
+    },
+    {
+      "turn": 4,
+      "label": "2라운드"
+    },
+    {
+      "turn": 8,
+      "label": "2라운드"
+    },
+    {
+      "turn": 0,
+      "label": "3라운드"
+    },
+    {
+      "turn": 4,
+      "label": "3라운드"
+    }
+  ],
+  "start": 0,
+  "frames": [
+    0,
+    1,
+    2,
+    3,
+    5,
+    6,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    {
+      "v": null,
+      "rest": true
+    },
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    null,
+    0,
+    0,
+    0,
+    1
+  ],
+  "expect": [
+    {
+      "by": 5,
+      "index": 2
+    },
+    {
+      "from": 6,
+      "to": 31,
+      "hold": 2
+    },
+    {
+      "at": 32,
+      "index": 3
+    },
+    {
+      "at": 34,
+      "index": 4
+    }
+  ]
+}

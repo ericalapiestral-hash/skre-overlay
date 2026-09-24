@@ -3,7 +3,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { segmentRanges, segmentAt, knownTurns } = require('../src/shared/tracker');
+const { segmentRanges, segmentAt } = require('../src/shared/tracker');
 
 const step = (turn, label) => ({ turn, label, text: `${label} ${turn}턴` });
 
@@ -32,10 +32,4 @@ test('단계가 어느 라운드인지', () => {
   assert.strictEqual(segmentAt(r, 4), 1);
   assert.strictEqual(segmentAt(r, 5), 2);
   assert.strictEqual(segmentAt(r, 99), 0, '범위 밖이면 0');
-});
-
-test('빌드에 나오는 턴 목록 — 인식 후보로 쓴다', () => {
-  assert.deepStrictEqual(knownTurns(RUNNING), [0, 4, 8, 12, 16, 20]);
-  assert.deepStrictEqual(knownTurns(RESET), [0, 4]);
-  assert.deepStrictEqual(knownTurns([]), []);
 });

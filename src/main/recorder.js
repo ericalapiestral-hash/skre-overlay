@@ -32,18 +32,29 @@ const SAMPLE_CAPS = {
   perValue: 4,
 };
 
-/** 표본 전체 크기 상한 (바이트). 넘으면 더 안 담는다 */
+/** 표본 전체 크기 상한 (바이트). 넘으면 가장 오래된 표본부터 버린다 */
 const MAX_SAMPLE_BYTES = 6 * 1024 * 1024;
 
 /**
+ * 못 읽음·흐림 표본은 **이만큼 띄엄띄엄** 담는다 (ms). 100ms 마다 담으면 40장이 4초 만에
+ * 찬다 — 같은 연출의 거의 같은 그림만 남는다. 500ms 간격이면 못 읽은 순간 20초 남짓이 남는다.
+ */
+const SAMPLE_GAP_MS = 500;
+
+/**
  * @typedef {{t: number, v: number|null, c?: number, drop?: number, rest?: boolean,
- *            reset?: boolean, i: number, why: string, set?: number, note?: string}} Frame
+ *            ended?: boolean, reset?: boolean, i: number, why: string, set?: number,
+ *            note?: string}} Frame
+ *   c    신뢰도 — **반올림하지 않는다.** 예전엔 소수 셋째 자리로 잘라서 0.8595~0.86 사이
+ *        값이 엔진에서는 흐림이었는데 재생에서는 또렷함이 됐다
  *   drop 최대 턴과 안 맞아 **버린** 값. v 는 null 이지만(추적기가 본 그대로)
  *        되돌려 볼 때는 "못 읽은 것"과 "버린 것"을 갈라 봐야 한다
  *   rest 이 프레임에서 **전투가 끝났다고 보고 쉬기 시작했다.** 엔진은 그때 읽기
  *        기억을 지운다 — 되돌려 볼 때 같이 지우지 않으면 궤적이 어긋난다
+ *   ended 길게 쉬고 난 뒤 처음 읽힌 프레임 — 엔진이 추적기에 "전투가 끝났다"를 알렸다
+ *   i    이 프레임을 넣은 **뒤**의 단계. 메모(note)는 그때의 단계
  * @typedef {{t: number, w: number, h: number, gray: string, kind: string,
- *            read: number|null, conf: number}} Sample
+ *            read: number|null, conf: number, bytes: number}} Sample
  */
 
 /**
@@ -59,12 +70,14 @@ function createRecorder(options = {}) {
   /** @type {Sample[]} */
   let samples = [];
   let sampleBytes = 0;
-  /** 종류별로 몇 장 담았는지 */
-  const counts = { unread: 0, weak: 0 };
-  /** @type {Map<number, number>} 값마다 몇 장 */
-  const perValue = new Map();
+  /** @type {Map<string, number>} 종류별로 마지막으로 담은 시각 — 띄엄띄엄 담으려고 */
+  const lastAt = new Map();
   /** 직전 프레임이 쉬는 중이었나 — 쉬기 **시작한** 프레임만 적는다 */
   let wasResting = false;
+  /** 기록 첫 프레임을 넣기 **전**의 단계 — 되돌려 볼 때 여기서 시작한다 */
+  let startIndex = 0;
+  /** 고리 버퍼가 앞을 버렸나 */
+  let trimmed = false;
   /** @type {Array<{turn: number, label: string}>} */
   let steps = [];
   /** @type {Record<string, any>} */
@@ -75,25 +88,42 @@ function createRecorder(options = {}) {
   function pushFrame(f) {
     if (startedAt === null) startedAt = f.t;
     frames.push(f);
-    if (frames.length > maxFrames) frames.splice(0, frames.length - maxFrames);
+    if (frames.length > maxFrames) {
+      const cut = frames.splice(0, frames.length - maxFrames);
+      // 앞을 버리면 **시작 위치도 옮긴다** — 버린 마지막 프레임 뒤의 단계에서 시작해야
+      // 되돌려 볼 때 같은 자리에서 출발한다
+      startIndex = cut[cut.length - 1].i;
+      startedAt = frames[0].t;
+      trimmed = true;
+    }
   }
 
-  /**
-   * 이 프레임의 크롭을 표본으로 담을지 — 담는다면 어떤 종류로.
-   * 못 읽음 > 흐림 > 그 값이 아직 부족함 순으로 본다.
-   */
+  /** 이 프레임의 크롭은 어떤 종류의 표본인가 */
   function sampleKind(raw, conf, strongScore) {
-    if (raw === null) return counts.unread < SAMPLE_CAPS.unread ? 'unread' : null;
-    if (conf < strongScore) return counts.weak < SAMPLE_CAPS.weak ? 'weak' : null;
-    if ((perValue.get(raw) || 0) < SAMPLE_CAPS.perValue) return `v${raw}`;
-    return null;
+    if (raw === null) return 'unread';
+    if (conf < strongScore) return 'weak';
+    return `v${raw}`;
+  }
+
+  /** 종류별 상한 */
+  function capOf(kind) {
+    if (kind === 'unread') return SAMPLE_CAPS.unread;
+    if (kind === 'weak') return SAMPLE_CAPS.weak;
+    return SAMPLE_CAPS.perValue;
+  }
+
+  function dropSample(s) {
+    const at = samples.indexOf(s);
+    if (at < 0) return;
+    samples.splice(at, 1);
+    sampleBytes -= s.bytes;
   }
 
   /**
    * 프레임 하나. gray를 같이 주면 표본으로 담길 수도 있다.
    *
    * @param {{raw: number|null, confidence: number, index: number, why: string,
-   *          dropped?: number|null, resting?: boolean}} r 엔진이 돌려준 결과
+   *          dropped?: number|null, resting?: boolean, ended?: boolean}} r 엔진이 돌려준 결과
    * @param {{gray?: Uint8Array, w?: number, h?: number, strongScore?: number,
    *          now?: number}} [frameData]
    */
@@ -101,20 +131,37 @@ function createRecorder(options = {}) {
     const t = frameData.now ?? clock();
     /** @type {Frame} */
     const f = { t, v: r.raw, i: r.index, why: r.why };
-    if (r.raw !== null) f.c = Math.round(r.confidence * 1000) / 1000;
+    if (r.raw !== null) f.c = r.confidence;
     // 최대 턴과 안 맞아 버린 프레임은 그렇다고 적어 둔다 — 못 읽은 것과 원인이 다르다
     if (r.dropped !== null && r.dropped !== undefined) f.drop = r.dropped;
     // 쉬기 시작한 프레임 — 엔진이 여기서 읽기 기억을 지웠다
     const resting = r.resting === true;
     if (resting && !wasResting) f.rest = true;
     wasResting = resting;
+    // 길게 쉬고 난 첫 프레임 — 엔진이 추적기에 "전투가 끝났다"를 알렸다 (P6b)
+    if (r.ended) f.ended = true;
     pushFrame(f);
 
     const { gray, w, h, strongScore = 0.86 } = frameData;
     if (!gray || !w || !h) return;
+    // 쉬는 중(결과 화면·로비)의 그림은 담지 않는다 — "왜 못 읽었나"를 알고 싶은 건 전투 중이다
+    if (resting) return;
+    if (gray.length > maxSampleBytes) return;
     const kind = sampleKind(r.raw, r.confidence, strongScore);
-    if (!kind) return;
-    if (sampleBytes + gray.length > maxSampleBytes) return;
+    const same = samples.filter((x) => x.kind === kind);
+
+    if (kind === 'unread' || kind === 'weak') {
+      // ★ 못 읽음·흐림은 **최근 것을 남긴다.** 예전엔 먼저 온 순서대로 상한까지 담고 안
+      // 뺐다 — [자동]을 로비·로딩에서 켜 두면 40장이 로딩 화면 4초에 다 차서, 정작 전투
+      // 중에 못 읽은 장면은 한 장도 안 남았다. 이상한 걸 본 사람은 **그 뒤에** 저장한다.
+      if (t - (lastAt.get(kind) ?? -Infinity) < SAMPLE_GAP_MS) return;
+      if (same.length >= capOf(kind)) dropSample(same[0]);
+    } else if (same.length >= capOf(kind)) {
+      // 값마다 몇 장은 **먼저 온 것**을 둔다 — 0~9 모양을 확보하려는 것이라 새 것일 필요가 없다
+      return;
+    }
+    // 크기 상한을 넘으면 가장 오래된 표본부터 버린다
+    while (samples.length > 0 && sampleBytes + gray.length > maxSampleBytes) dropSample(samples[0]);
 
     // 넘겨받은 버퍼는 다음 프레임에 재사용될 수 있으니 여기서 값을 굳힌다
     samples.push({
@@ -124,11 +171,11 @@ function createRecorder(options = {}) {
       gray: Buffer.from(gray).toString('base64'),
       kind,
       read: r.raw,
-      conf: Math.round(r.confidence * 1000) / 1000,
+      conf: r.confidence,
+      bytes: gray.length,
     });
     sampleBytes += gray.length;
-    if (kind === 'unread' || kind === 'weak') counts[kind] += 1;
-    else if (r.raw !== null) perValue.set(r.raw, (perValue.get(r.raw) || 0) + 1);
+    lastAt.set(kind, t);
   }
 
   /** 사용자가 손으로 단계를 옮겼다 (시나리오의 {"set": n}) */
@@ -139,12 +186,13 @@ function createRecorder(options = {}) {
   /**
    * 자유 표시 — 자동 켬/끔, 빌드 바꿈 같은 것.
    *
-   * @param {{reset?: boolean}} [what] reset=true 면 **이때 엔진의 읽기 기억을 지웠다**는
-   *   뜻이다. 되돌려 볼 때 같이 지워야 궤적이 그때와 같아진다 (rest 와 같은 이유).
+   * @param {{reset?: boolean, index?: number}} [what] reset=true 면 **이때 엔진의 읽기 기억을
+   *   지웠다**는 뜻이다. 되돌려 볼 때 같이 지워야 궤적이 그때와 같아진다 (rest 와 같은 이유).
+   *   index 는 그때의 단계 — 기록이 메모로 시작해도 시작 위치를 안 잃는다
    */
   function note(text, now, what = {}) {
     /** @type {Frame} */
-    const f = { t: now ?? clock(), v: null, i: -1, why: 'note', note: String(text) };
+    const f = { t: now ?? clock(), v: null, i: what.index ?? -1, why: 'note', note: String(text) };
     if (what.reset) f.reset = true;
     pushFrame(f);
   }
@@ -153,15 +201,15 @@ function createRecorder(options = {}) {
    * 보던 단계 목록이 바뀌었다. 기록은 **단계마다 다시 시작한다** —
    * 다른 빌드의 프레임이 섞이면 되돌려 볼 수 없기 때문이다.
    */
-  function setFlow(flow, info = {}) {
+  function setFlow(flow, info = {}, index = 0) {
     steps = (Array.isArray(flow) ? flow : []).map((s) => ({ turn: s.turn, label: s.label }));
     meta = { ...info };
+    startIndex = index;
+    trimmed = false;
     frames = [];
     samples = [];
     sampleBytes = 0;
-    counts.unread = 0;
-    counts.weak = 0;
-    perValue.clear();
+    lastAt.clear();
     wasResting = false;
     startedAt = null;
   }
@@ -179,9 +227,15 @@ function createRecorder(options = {}) {
       recordedAt: new Date().toISOString(),
       meta: { ...meta, ...info.meta },
       steps,
-      start: frames.length ? frames[0].i : 0,
+      // ★ 첫 프레임을 넣기 **전**의 단계. 예전엔 첫 프레임의 i(넣은 **뒤**의 단계, 메모면 -1)를
+      // 썼다 — 기록이 [자동]을 켠 메모로 시작하면 0단계에서 재생해 실제 위치를 잃었다.
+      start: startIndex,
+      // 고리 버퍼가 앞을 버렸으면 알린다 — 그 앞의 추적기 기억(믿는 턴·뛰기 기록)이 없는 채로
+      // 재생되므로 처음 몇 초는 그때와 다를 수 있다
+      ...(trimmed ? { trimmed: true } : {}),
       frames: frames.map((f) => ({ ...f, t: f.t - base })),
-      samples: samples.map((s) => ({ ...s, t: s.t - base })),
+      // bytes 는 상한 계산용이라 파일에는 안 쓴다
+      samples: samples.map(({ bytes, ...s }) => ({ ...s, t: s.t - base })),
     };
   }
 
@@ -204,4 +258,4 @@ function createRecorder(options = {}) {
   };
 }
 
-module.exports = { createRecorder, MAX_FRAMES, SAMPLE_CAPS };
+module.exports = { createRecorder, MAX_FRAMES, SAMPLE_CAPS, SAMPLE_GAP_MS };

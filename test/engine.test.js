@@ -173,7 +173,7 @@ test('가르친 대조표를 더하면 개수가 늘어난다', () => {
   assert.strictEqual(after, before + 1);
 });
 
-test('reset은 투표만 지우고 위치는 지킨다', () => {
+test('reset은 읽기 기억(추적기·최대 턴)만 지우고 위치는 지킨다', () => {
   const e = engine();
   e.setIndex(2);
   e.reset();
