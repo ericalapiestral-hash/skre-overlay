@@ -521,17 +521,13 @@ function registerIpc() {
     });
   });
 
-  ipcMain.on('overlay:click-through', (_e, on) => {
-    // 해제 단축키가 등록 안 된 상태에서 켜면 영영 못 끄게 된다
-    if (on && shortcutFailures.includes('Control+Alt+L')) {
-      overlayWin?.webContents.send('shortcuts:failed', [
-        ...shortcutFailures,
-        '(클릭 통과를 켤 수 없어요 — 해제 단축키가 막혀 있음)',
-      ]);
-      return;
-    }
-    setClickThrough(Boolean(on));
-  });
+  /**
+   * 등록 못 한 단축키 — 화면이 **다 뜬 뒤에 물어본다.**
+   *
+   * 예전엔 창이 뜰 때 한 번 밀어 보냈는데, 화면은 곧이어 도감을 읽고 상태줄을
+   * "… 자리로 시작합니다"로 덮어써서 경고가 눈 깜빡할 새 사라졌다. 다시 볼 길도 없었다.
+   */
+  ipcMain.handle('keys:failures', () => shortcutFailures);
 
   /** 접기/펼치기 — CSS로만 숨기면 투명해도 창 전체가 클릭을 막아서, 창 자체를 줄인다 */
   ipcMain.on('overlay:collapse', (_e, collapsed) => {
@@ -662,6 +658,9 @@ const SHORTCUTS = [
     if (overlayWin.isVisible()) overlayWin.hide();
     else overlayWin.show();
   }],
+  // 클릭 통과는 **이 단축키로만** 켜고 끈다. 그래서 이게 등록 안 됐으면 켤 길도 없어서
+  // "켰는데 못 끄는" 일이 안 생긴다. 화면에 켜는 단추를 달 거면 그 전에 이 단축키가
+  // 등록됐는지(shortcutFailures) 먼저 볼 것 — 안 그러면 클릭이 전부 게임으로 새는 창에 갇힌다.
   ['Control+Alt+L', () => setClickThrough(!clickThrough)],
   ['Control+Alt+R', () => openPicker()],
   ['Control+Alt+Right', () => overlayWin?.webContents.send('step:nav', 1)],
@@ -674,12 +673,9 @@ function registerShortcuts() {
   for (const [combo, handler] of SHORTCUTS) {
     if (!globalShortcut.register(combo, handler)) failed.push(combo);
   }
-  if (failed.length === 0) return;
-  console.warn(`[단축키] 다른 프로그램이 사용 중이라 등록 실패: ${failed.join(', ')}`);
   shortcutFailures = failed;
-  overlayWin?.webContents.once('did-finish-load', () => {
-    overlayWin?.webContents.send('shortcuts:failed', failed);
-  });
+  // 화면에는 화면이 물어볼 때 알린다 (keys:failures) — 여기서 밀어 보내면 시작 문구에 덮인다
+  if (failed.length > 0) console.warn(`[단축키] 다른 프로그램이 사용 중이라 등록 실패: ${failed.join(', ')}`);
 }
 
 // ─────────────────────────────── 자가 점검 (--doctor)
@@ -818,7 +814,24 @@ function smoke() {
           try {
             const cfg = await api.config.get();
             out.config = cfg && typeof cfg === 'object' ? Object.keys(cfg).sort() : null;
+            // 앱이 알아서 쓴 기본 위치는 설정에 **안 남아야** 한다 (다음에 기본값을 고치면 닿게)
+            out.turnRegion = cfg ? cfg.turnRegion : 'missing';
           } catch (e) { out.config = { error: String(e && e.message || e) }; }
+          // 채널을 몇 개 더 왕복시킨다. 이름이 맞는지는 test/ipc.test.js 가 글자로 전부 맞대
+          // 보고, 여기서는 **실제로 불러서 답이 오는지**를 본다 — 특히 capture:source 는
+          // 죽으면 [자동]이 통째로 죽는데, 예전엔 여기서 안 불러서 이름을 바꿔도 초록이었다.
+          try {
+            const src = await api.capture.source(undefined);
+            out.capture = src ? { id: typeof src.sourceId, width: src.width, height: src.height } : null;
+          } catch (e) { out.capture = { error: String(e && e.message || e) }; }
+          try {
+            out.body = await api.catalog.body('smoke-2');
+            out.keys = await api.keys.failures();
+            const t = await api.engine.teach(new Uint8Array(80 * 40).fill(28), 80, 40, '12');
+            out.teach = { ok: t.ok, error: typeof t.error };
+            const d = await api.diag.state();
+            out.diag = Object.keys(d).sort();
+          } catch (e) { out.more = { error: String(e && e.message || e) }; }
           try {
             await api.engine.setFlow(null, {});
             const r = await api.engine.feed(new Uint8Array(80 * 40).fill(28), 80, 40);

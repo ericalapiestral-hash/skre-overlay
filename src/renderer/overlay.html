@@ -19,6 +19,7 @@
     </header>
 
     <div id="lock" class="hidden">🔒 클릭 통과 중 — <b>Ctrl+Alt+L</b> 로 해제</div>
+    <div id="keys-warn" class="hidden"></div>
 
     <main id="main">
       <section id="pick">
@@ -55,13 +56,14 @@
 
       <section id="teach" class="hidden">
         <div class="teach-head">
-          <span>지금 잡히는 화면입니다. <b>실제 턴 숫자</b>를 넣어주세요.</span>
+          <span>잡아 둔 화면입니다. 이 화면의 <b>실제 턴 숫자</b>를 넣어주세요.</span>
           <button id="teach-close" title="닫기">✕</button>
         </div>
         <canvas id="teach-view" width="200" height="60"></canvas>
         <div class="teach-row">
           <input id="teach-value" type="text" inputmode="numeric" placeholder="예: 16" maxlength="3" />
           <button id="teach-save">가르치기</button>
+          <button id="teach-grab" class="ghost" title="지금 화면을 새로 잡습니다">다시 잡기</button>
           <button id="teach-forget" class="ghost" title="가르친 것을 전부 지웁니다">초기화</button>
         </div>
         <p id="teach-msg"></p>

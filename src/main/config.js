@@ -28,7 +28,11 @@ const DEFAULTS = {
   opacity: 88,
   /** 글자 크기 배율 0.8~1.6 */
   scale: 1,
-  /** 턴 숫자 영역 { displayId, fx, fy, fw, fh } — 화면 대비 비율이라 해상도가 바뀌어도 안전 */
+  /**
+   * 턴 숫자 영역 { displayId, fx, fy, fw, fh } — 화면 대비 비율이라 해상도가 바뀌어도 안전.
+   * [기본 위치]를 눌렀으면 좌표 대신 { preset, displayId } 다 (shared/regions.js 의 resolveRegion).
+   * 비어 있으면 화면이 기본 위치로 시작하되 **저장하지 않는다.**
+   */
   turnRegion: null,
   /** 사용자가 직접 가르친 숫자 템플릿 { d, rows } */
   userTemplates: [],
@@ -45,12 +49,42 @@ function createStore(dir) {
   const file = path.join(dir, 'config.json');
 
   function load() {
+    let text;
     try {
-      const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
-      if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return { ...DEFAULTS };
-      return { ...DEFAULTS, ...raw };
+      text = fs.readFileSync(file, 'utf8');
     } catch {
-      return { ...DEFAULTS };
+      return { ...DEFAULTS }; // 아직 없다 — 처음 켠 것이다
+    }
+    try {
+      const raw = JSON.parse(text);
+      if (raw && typeof raw === 'object' && !Array.isArray(raw)) return { ...DEFAULTS, ...raw };
+    } catch {
+      /* 아래에서 비켜 둔다 */
+    }
+    setAside();
+    return { ...DEFAULTS };
+  }
+
+  /**
+   * 망가진 설정 파일을 **옆에 비켜 둔다** (`config.json.broken-20260904-153012`).
+   *
+   * 예전엔 기본값을 돌려주기만 했다. 그러면 곧이은 저장이 — 창을 옮기거나 슬라이더를
+   * 움직이면 바로 일어난다 — 기본값 위에 바뀐 값만 얹어 원본을 덮어써서, 가르친 숫자·
+   * 노션 주소·턴 영역이 **백업 없이** 사라졌다. 비켜 두면 손으로라도 살릴 수 있다.
+   */
+  function setAside() {
+    const p2 = (n) => String(n).padStart(2, '0');
+    const d = new Date();
+    const stamp =
+      `${d.getFullYear()}${p2(d.getMonth() + 1)}${p2(d.getDate())}-` +
+      `${p2(d.getHours())}${p2(d.getMinutes())}${p2(d.getSeconds())}`;
+    let aside = `${file}.broken-${stamp}`;
+    for (let n = 2; fs.existsSync(aside); n += 1) aside = `${file}.broken-${stamp}-${n}`;
+    try {
+      fs.renameSync(file, aside);
+      console.warn(`[설정] 설정 파일이 망가져 있어 옆에 비켜 두고 기본값으로 시작합니다: ${aside}`);
+    } catch (e) {
+      console.warn('[설정] 망가진 설정 파일을 비켜 두지 못했다:', e instanceof Error ? e.message : e);
     }
   }
 
@@ -59,7 +93,15 @@ function createStore(dir) {
     const tmp = `${file}.tmp`;
     try {
       fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(tmp, JSON.stringify(next, null, 2), 'utf8');
+      // 디스크까지 내려보낸 **뒤에** 이름을 바꾼다. 안 그러면 윈도우가 멈추거나 전원이
+      // 나갔을 때 이름만 바뀌고 내용은 비어 있는 파일이 남을 수 있다 (게임 PC 에서 흔하다)
+      const fd = fs.openSync(tmp, 'w');
+      try {
+        fs.writeFileSync(fd, JSON.stringify(next, null, 2), 'utf8');
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
       fs.renameSync(tmp, file);
     } catch (e) {
       console.warn('[설정] 저장 실패:', e instanceof Error ? e.message : e);

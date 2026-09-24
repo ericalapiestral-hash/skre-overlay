@@ -36,4 +36,26 @@ const PRESETS = [
   { id: 'destroyer', label: '파괴신·공성전 (왼쪽 위)', region: DESTROYER },
 ];
 
-module.exports = { DESTROYER, PRESETS };
+/**
+ * 설정에 저장된 턴 영역 → 실제로 읽을 자리.
+ *
+ * [기본 위치]를 누르면 좌표 **사본이 아니라 어느 기본 위치인지**(`{preset, displayId}`)만
+ * 저장한다. 사본을 저장하면 위의 값을 실제 화면에 맞게 고쳐도 한 번이라도 [기본 위치]를
+ * 누른 사람에게는 영영 안 닿는다 — 앱이 알아서 쓴 기본값을 저장하지 않는 것과 같은 이유다.
+ * 사람이 [턴 영역]으로 직접 잡은 값은 좌표 그대로 저장되고 여기서도 그대로 돌려준다.
+ *
+ * @param {any} saved 설정의 turnRegion
+ * @param {typeof PRESETS} [presets]
+ * @returns {({displayId?: number} & Region)|null} 모르는 기본 위치면 null — 처음 켤 때처럼
+ *   맨 앞 기본 위치로 시작하게 둔다
+ */
+function resolveRegion(saved, presets = PRESETS) {
+  if (!saved || typeof saved !== 'object') return null;
+  if (typeof saved.preset !== 'string') return saved;
+  const preset = presets.find((p) => p.id === saved.preset);
+  if (!preset) return null;
+  const out = { ...preset.region };
+  return typeof saved.displayId === 'number' ? { displayId: saved.displayId, ...out } : out;
+}
+
+module.exports = { DESTROYER, PRESETS, resolveRegion };

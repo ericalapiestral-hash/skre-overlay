@@ -1,6 +1,6 @@
 // 오버레이 화면 — 고르고, 그리고, 캡처한다. 판단은 하지 않는다.
 //
-// 인식·투표·단계 이동은 전부 메인의 엔진에 있다(src/main/engine.js).
+// 인식·추적·단계 이동은 전부 메인의 엔진에 있다(src/main/engine.js).
 // 여기 남은 건 "화면을 잘라 넘기고, 돌아온 결과를 그리는 것"뿐이다.
 'use strict';
 
@@ -27,15 +27,26 @@ const state = {
   steps: [],
   index: 0,
   auto: false,
-  /** @type {{displayId:number, fx:number, fy:number, fw:number, fh:number}|null} */
+  /** @type {{displayId?: number, fx:number, fy:number, fw:number, fh:number}|null} displayId 가 없으면 주 모니터 */
   region: null,
   tickMs: 100,
   /** 실제로 요청한 캡처 장수 (초당) — 프레임을 흘려보낼 문턱의 기준 */
   captureFps: 10,
-  /** 마지막으로 잘라 온 화면 — [가르치기]가 쓴다 */
+  /**
+   * 마지막으로 **읽고 난** 화면과 그때 읽힌 값 ({image, w, h, read}).
+   * 그림과 값을 한 짝으로 둔다 — [가르치기]가 이 짝을 그대로 얼려 쓴다.
+   */
   lastFrame: null,
-  /** @type {number|null} 마지막으로 읽힌 턴 값 — [가르치기]에 미리 채워 준다 */
-  lastRead: null,
+  /**
+   * [가르치기]를 연 순간 얼려 둔 화면 ({image, gray, w, h, read}).
+   *
+   * ★ 가르치는 동안 화면을 따라 바꾸지 않는다. 예전엔 창을 연 채 자동이 돌면 미리보기와
+   * 가르칠 그림은 매 장 새 화면으로 바뀌는데 입력칸은 **연 순간의 값**에 머물러서,
+   * 그 사이 턴이 넘어가면 "13" 그림을 "12"로 배웠다. 가르친 모양은 기본 대조표보다
+   * 무겁게 쳐서(TAUGHT_WEIGHT) 초기화할 때까지 계속 오독한다 — 제일 나쁜 종류다.
+   * 새 화면으로 가르치려면 [다시 잡기]를 누른다.
+   */
+  teachFrame: null,
   /** 전투가 끝난 것 같아 쉬는 중 — 인식 주기를 늦춘다 (엔진이 정한다) */
   resting: false,
   stats: null,
@@ -77,17 +88,35 @@ async function loadCatalog({ first = false } = {}) {
   }
 
   const config = await api.config.get();
-  const remembered = config.lastBuildId
-    ? state.builds.find((b) => b.id === config.lastBuildId)
-    : null;
-  if (remembered) {
-    state.tab = remembered.category;
+  const start = startBuild(config.lastBuildId);
+  if (start) {
+    state.tab = start.category;
     renderTabs();
-    await selectBuild(remembered.id, { save: false });
+    await selectBuild(start.id, { save: false });
   } else {
-    renderBuildList();
     await selectBuild(defaultBuildId(), { save: false });
   }
+}
+
+/**
+ * 앱을 켤 때 띄울 빌드 — 마지막으로 보던 것. 단 **요일이 지난 공성전 빌드는 오늘 것으로.**
+ *
+ * 공성전은 보스가 요일마다 바뀐다. 월요일에 보던 빌드를 목요일에 그대로 띄우면 기억해 둔
+ * 것이 오히려 틀린 답이다 ("오늘 요일 보스를 먼저 골라 준다"가 탭을 누를 때만 맞았다).
+ * 요일이 없는 빌드(파괴신)는 그대로 둔다 — 그건 어제 보던 것이 오늘도 맞다.
+ */
+function startBuild(lastId) {
+  const last = lastId ? state.builds.find((b) => b.id === lastId) : null;
+  if (!last || last.weekdays.length === 0) return last;
+  const today = WEEKDAYS[new Date().getDay()];
+  if (last.weekdays.includes(today)) return last;
+  const todays = (b) => b.category === last.category && b.weekdays.includes(today);
+  // 같은 묶음(같은 보스·같은 콘텐츠)의 오늘 것을 먼저, 없으면 같은 탭의 오늘 것
+  return (
+    state.builds.find((b) => todays(b) && b.group === last.group) ||
+    state.builds.find(todays) ||
+    last
+  );
 }
 
 function categories() {
@@ -108,8 +137,11 @@ function renderTabs() {
     btn.onclick = async () => {
       state.tab = cat;
       renderTabs();
-      renderBuildList();
-      await selectBuild(defaultBuildId());
+      // 검색어 때문에 이 탭에 보이는 빌드가 없으면 **지금 빌드를 그대로 둔다.** 예전엔
+      // 빈 id로 골라서 전투 중에 보던 단계가 통째로 사라졌다 (검색칸 한 글자 때문에)
+      const id = defaultBuildId();
+      if (id) await selectBuild(id);
+      else renderBuildList();
     };
     tabs.appendChild(btn);
   }
@@ -205,19 +237,16 @@ function renderParseNotes(build) {
   el.title = '도감 본문을 읽다가 일부를 다르게 봤어요. 순서가 이상하면 도감의 이 부분을 확인해 주세요.';
 }
 
+/**
+ * 빌드를 고른다. 드롭다운도 **다시 그린다** — value 만 바꾸면 탭을 옮긴 뒤에도
+ * 옛 빌드의 "(보는 중: …)" 줄이 남고, 시작할 때 기억한 빌드로 뜨면 목록이 아예 비었다.
+ */
 async function selectBuild(id, { save = true } = {}) {
-  if (!id) {
-    state.buildId = '';
-    state.picks = {};
-    await applyFlow();
-    return;
-  }
-  state.buildId = id;
+  state.buildId = id || '';
   state.picks = {};
-  const select = $('build');
-  if (select.value !== id) select.value = id;
+  renderBuildList();
   await applyFlow();
-  if (save) api.config.set({ lastBuildId: id });
+  if (id && save) api.config.set({ lastBuildId: id });
 }
 
 // ─────────────────────────────── 분기
@@ -343,7 +372,19 @@ function highlightStep() {
     if (row.className !== cls) row.className = cls;
   });
   const now = stepRows[state.index];
-  if (now) now.scrollIntoView({ block: 'center', behavior: 'instant' });
+  if (now) centerIn($('steps'), now);
+}
+
+/**
+ * 단계 목록 **안에서만** 지금 줄을 가운데로 굴린다.
+ *
+ * scrollIntoView 를 쓰면 안 된다 — 굴릴 수 있는 조상(#main)까지 같이 굴린다. 설정을
+ * 열고 아래 [전투 기록 저장]까지 내려가 있으면, 단계가 넘어갈 때마다 맨 위로 튀었다.
+ */
+function centerIn(box, row) {
+  const b = box.getBoundingClientRect();
+  const r = row.getBoundingClientRect();
+  box.scrollTop += r.top + r.height / 2 - (b.top + b.height / 2);
 }
 
 /**
@@ -385,27 +426,50 @@ let rateShownAt = 0;
 let busy = false;
 /** toggleAuto가 비동기라 겹칠 수 있다 — 세대 번호로 늦게 도착한 호출을 무효화한다 */
 let generation = 0;
+/**
+ * 캡처가 **다 켜져서** 돌고 있다 — [자동]을 켜는 도중에는 false.
+ * 슬라이더의 늦은 장수 맞추기(retuneCapture)가 켜는 도중에 끼어들면, 켜는 쪽이 무효가 되어
+ * 엔진 초기화를 건너뛴다. 그래서 다 켜진 캡처만 다시 연다.
+ */
+let capturing = false;
 /** 회색조 버퍼는 크기가 안 바뀌는 한 다시 만들지 않는다 (프레임마다 버리면 쓰레기만 쌓인다) */
 let grayBuffer = null;
 
+/** @param {MediaStream} stream */
+function stopTracks(stream) {
+  for (const track of stream.getTracks()) track.stop();
+}
+
 function stopStream() {
   if (media) {
-    for (const track of media.getTracks()) track.stop();
+    stopTracks(media);
     media = null;
   }
   $('cap').srcObject = null;
 }
 
-function stopCapture() {
+/** 걸어 둔 다음-화면 콜백을 푼다 */
+function cancelFrame() {
   if (timer) clearTimeout(timer);
   timer = null;
-  if (watchdog) clearInterval(watchdog);
-  watchdog = null;
   const video = $('cap');
   if (frameHandle && typeof video.cancelVideoFrameCallback === 'function') {
     video.cancelVideoFrameCallback(frameHandle);
   }
   frameHandle = 0;
+}
+
+/** 콜백을 **새로** 건다 — 끊겼을 수 있는 옛 것은 풀고 (하나만 걸려 있게) */
+function rearm() {
+  cancelFrame();
+  pump();
+}
+
+function stopCapture() {
+  capturing = false;
+  cancelFrame();
+  if (watchdog) clearInterval(watchdog);
+  watchdog = null;
   stopStream();
 }
 
@@ -418,6 +482,10 @@ function stopCapture() {
  */
 function pump() {
   if (!state.auto) return;
+  // ★ 이미 걸려 있으면 또 걸지 않는다. 안전줄(watchdog)이 화면이 멈출 때마다 pump 를
+  // 부르는데, 예전엔 그때마다 콜백이 하나씩 늘었다 — 걸린 콜백은 불릴 때마다 스스로
+  // 다시 걸어서 영영 안 줄고, 핸들은 마지막 것만 기억해 끌 때도 하나만 풀렸다.
+  if (frameHandle || timer) return;
   const video = $('cap');
   if (typeof video.requestVideoFrameCallback === 'function') {
     frameHandle = video.requestVideoFrameCallback(onFrame);
@@ -440,13 +508,26 @@ function onFrame() {
   // 장수 제약이 무시돼 훨씬 빨리 오는 환경에서도 이 문턱이 상한이 된다.
   // 쉬는 중에는 주기를 늦춘다 (위 REST_TICK_MS). 캡처 스트림은 그대로 두는데,
   // 비싼 쪽은 크롭·확대·인식이라 그걸 안 하는 것만으로 부담이 거의 사라진다.
-  const gate = state.resting ? REST_TICK_MS : 500 / state.captureFps;
+  const gate = state.resting ? REST_TICK_MS : readGate();
   if (now - lastProcessed >= gate) {
     measureRate(now);
     lastProcessed = now;
     tick();
   }
   pump();
+}
+
+/**
+ * 몇 ms 만에 다음 장을 읽나 — **주기에서 캡처 반 장 분량을 뺀 값.**
+ *
+ * 캡처 장수가 주기와 같으면(보통) 반 장 분량이 되어 온 장을 다 읽는다(위 설명).
+ * 슬라이더로 주기를 늘렸는데 스트림은 아직 옛 장수로 오고 있으면 이 문턱이 늘어난
+ * 주기를 지킨다 — 예전엔 문턱이 캡처 장수만 봐서 [자동]을 다시 켜기 전까지 슬라이더가
+ * 안 먹었다 ("게임이 버벅이면 주기를 늘려 보세요"가 거짓말이었다).
+ */
+function readGate() {
+  const half = 500 / state.captureFps;
+  return Math.max(half, state.tickMs - half);
 }
 
 /** 실제로 초당 몇 번 읽고 있는지 — 설정 패널에 보여준다 (정말 도는지 눈으로 확인하려고) */
@@ -470,27 +551,38 @@ function measureRate(now) {
  */
 function startWatchdog() {
   if (watchdog) clearInterval(watchdog);
+  if (!state.auto) return;
   const gap = Math.max(1000, state.tickMs * 4);
   watchdog = setInterval(() => {
     if (!state.auto) return;
     if (performance.now() - lastProcessed < gap) return;
     lastProcessed = performance.now();
     tick();
-    pump(); // 콜백이 끊겼을 수 있으니 다시 건다
+    rearm(); // 콜백이 끊겼을 수 있으니 다시 건다 — 더하지 말고 갈아 끼운다
   }, gap);
 }
 
-async function startCapture() {
+/** 이 주기에 맞는 캡처 장수 — 화면을 통째로 받아 오는 일이라 초당 장수가 곧 시스템 부담이다 */
+const captureFpsFor = (tickMs) => Math.max(1, Math.min(20, Math.round(1000 / tickMs)));
+
+/**
+ * 캡처를 연다. 이 호출이 늦게 끝나 이미 쓸모없어졌으면(`gen` 이 바뀌었으면) false.
+ *
+ * ★ 스트림은 **이 호출이 끝까지 쥐고 있다가** 여전히 유효할 때만 `media` 에 넘긴다.
+ * 예전엔 받자마자 전역 `media` 에 넣어서, [자동]을 켬·끔·켬 빠르게 누르면 먼저 호출의
+ * 스트림이 나중 호출에 덮여 아무도 안 끄는 채로 새어 나갔다 (화면을 통째로 받는 스트림이다).
+ * 그리고 늦게 끝난 호출이 `stopStream()` 으로 **새 호출의 스트림**을 끄는 일도 있었다.
+ */
+async function startCapture(gen) {
   if (!state.region) throw new Error('턴 영역을 먼저 지정해주세요.');
   const src = await api.capture.source(state.region.displayId);
   if (!src) throw new Error('영역을 지정했던 모니터를 못 찾았어요 — 턴 영역을 다시 지정해주세요.');
+  if (gen !== generation) return false;
 
   stopStream();
-  // 화면을 통째로 받아 오는 일이라 초당 장수가 곧 시스템 부담이다.
   // 인식 주기와 **같게** 받는다 — 온 장은 다 읽으므로 이게 곧 인식 속도가 된다.
-  const fps = Math.max(1, Math.min(20, Math.round(1000 / state.tickMs)));
-  state.captureFps = fps;
-  media = await navigator.mediaDevices.getUserMedia(/** @type {any} */ ({
+  const fps = captureFpsFor(state.tickMs);
+  const stream = await navigator.mediaDevices.getUserMedia(/** @type {any} */ ({
     audio: false,
     video: {
       // ★ 크기를 못 박는 것이 핵심이다.
@@ -507,15 +599,57 @@ async function startCapture() {
       },
     },
   }));
+  if (gen !== generation) {
+    stopTracks(stream); // 기다리는 사이 [자동]을 끄거나 다시 켰다 — 이 스트림은 아무도 안 쓴다
+    return false;
+  }
+  stopStream(); // 기다리는 사이 다른 호출이 열었으면 그것도 여기서 정리된다 (media 는 하나다)
+  media = stream;
+  state.captureFps = fps;
   const video = $('cap');
-  video.srcObject = media;
-  await video.play();
+  video.srcObject = stream;
+  try {
+    await video.play();
+  } catch (e) {
+    // 기다리는 사이 다른 호출이 srcObject 를 바꾸면 play() 가 AbortError 로 거절된다 —
+    // 그건 오류가 아니다. 이 스트림을 끄는 일은 그 호출이(stopStream) 이미 했다.
+    if (gen !== generation) return false;
+    throw e;
+  }
+  return gen === generation;
 }
 
-/** RGBA → 회색조 (표준 휘도식). 버퍼는 크기가 같으면 다시 쓴다 */
-function toGray(rgba, length) {
-  if (!grayBuffer || grayBuffer.length !== length) grayBuffer = new Uint8Array(length);
-  const gray = grayBuffer;
+/**
+ * 인식 주기를 바꾼 뒤 캡처 장수를 맞춘다 — 슬라이더를 놓고 잠시 뒤에 한 번.
+ *
+ * 주기 자체는 문턱(readGate)으로 **바로** 먹는다. 여기서 맞추는 건 캡처 장수다:
+ * 늘린 주기는 받는 장수를 줄여야 부담이 실제로 줄고, 줄인 주기는 받는 장수를 늘려야
+ * 실제로 빨라진다 (온 장보다 더 자주 읽을 수는 없다). 스트림을 다시 여는 동안 몇 장을
+ * 못 받지만 추적기는 가려짐으로 보고 제자리에 머문다 — 읽기 기억은 지우지 않는다.
+ */
+async function retuneCapture() {
+  if (!state.auto || !capturing || captureFpsFor(state.tickMs) === state.captureFps) return;
+  const gen = ++generation;
+  try {
+    if (!(await startCapture(gen))) return;
+    rearm();
+    startWatchdog();
+  } catch (e) {
+    if (gen !== generation) return;
+    await toggleAuto(false);
+    setStatus(e.message, 'err');
+  }
+}
+
+/**
+ * RGBA → 회색조 (표준 휘도식). 버퍼를 안 주면 인식용 버퍼를 돌려 쓴다 (크기가 같으면)
+ * @param {Uint8ClampedArray} rgba
+ * @param {number} length
+ * @param {Uint8Array} [out]
+ */
+function toGray(rgba, length, out) {
+  if (!out && (!grayBuffer || grayBuffer.length !== length)) grayBuffer = new Uint8Array(length);
+  const gray = out || grayBuffer;
   for (let i = 0, p = 0; p < length; i += 4, p += 1) {
     gray[p] = (0.299 * rgba[i] + 0.587 * rgba[i + 1] + 0.114 * rgba[i + 2]) | 0;
   }
@@ -560,8 +694,6 @@ async function tick() {
   if (busy || !state.auto) return;
   const frame = cropFrame();
   if (!frame) return;
-  state.lastFrame = frame;
-  if (!$('teach').classList.contains('hidden')) drawTeachView();
 
   busy = true;
   const gen = generation;
@@ -569,10 +701,16 @@ async function tick() {
     const r = await api.engine.feed(frame.gray, frame.w, frame.h);
     if (!state.auto || gen !== generation) return; // 기다리는 동안 상태가 바뀌었다
 
+    // 그림과 **그 그림에서 읽힌 값**을 한 짝으로 남긴다 — [가르치기]가 이 짝을 얼려 쓴다.
+    // 회색조는 다음 장이 같은 버퍼를 덮어쓰므로 들고 가지 않는다 (image 는 장마다 새것이다)
+    state.lastFrame = { image: frame.image, w: frame.w, h: frame.h, read: r.raw };
+
     // 최대 턴을 알아냈으면 화면에도 "16 / 70"으로 보여준다 — 인식이 슬래시를
-    // 제대로 갈랐는지 사람이 한눈에 확인할 수 있는 자리다
-    if (r.turn !== null) $('turn').textContent = r.max ? `${r.turn} / ${r.max}` : `${r.turn}턴`;
-    if (r.raw !== null) state.lastRead = r.raw; // [가르치기]를 열 때 미리 채워 준다
+    // 제대로 갈랐는지 사람이 한눈에 확인할 수 있는 자리다.
+    // 단계가 없는 빌드(스킬 순서를 못 읽음)는 추적기가 턴을 안 세므로 읽힌 값을 그대로 보여준다 —
+    // 그게 없으면 영역이 맞게 잡혔는지 확인할 길이 없어서 멀쩡한 영역을 다시 잡게 된다.
+    const shown = r.turn !== null ? r.turn : r.why === 'empty' ? r.raw : null;
+    if (shown !== null) $('turn').textContent = r.max ? `${shown} / ${r.max}` : `${shown}턴`;
     state.resting = r.resting;
     if (r.index !== state.index) {
       state.index = r.index;
@@ -603,6 +741,16 @@ function reportStatus(r) {
   // 슬래시를 엉뚱한 데서 잘랐다는 뜻이라 그 프레임은 통째로 안 믿는다.
   if (r.dropped !== null && r.dropped !== undefined) {
     setStatus(`숫자가 최대 턴(${r.max})과 안 맞아 건너뜀 (${r.dropped}) — 잠시 뒤 다시 읽어요`, '');
+    return;
+  }
+  // 읽기는 되는데 따라갈 단계가 없다 — "찾는 중"이라고 하면 영역이 틀린 줄 안다
+  if (r.why === 'empty' && r.raw !== null) {
+    setStatus(
+      currentBuild()
+        ? `인식 중 — ${r.raw}턴 · 이 빌드는 스킬 순서를 못 읽어서 따라갈 단계가 없어요`
+        : `인식 중 — ${r.raw}턴 · 빌드를 고르면 단계를 따라갑니다`,
+      'on',
+    );
     return;
   }
   if (r.turn === null) {
@@ -639,7 +787,9 @@ function reportStatus(r) {
 
 async function toggleAuto(on) {
   const gen = ++generation; // 이전에 걸려 있던 호출을 전부 무효화
+  capturing = false;
   state.auto = on;
+  state.lastFrame = null; // 영역이 바뀌어 다시 켜는 것일 수 있다 — 옛 영역 그림으로 가르치지 않게
   $('auto').checked = on;
   $('auto-label').classList.toggle('on', on);
 
@@ -651,17 +801,17 @@ async function toggleAuto(on) {
     return;
   }
   try {
-    await startCapture();
-    if (gen !== generation || !state.auto) {
-      stopStream(); // 이 호출이 만든 스트림은 이 호출이 치운다
-      return;
-    }
+    // 늦게 끝난 호출의 스트림은 startCapture 가 스스로 치운다. 여기서 stopStream() 을
+    // 부르면 안 된다 — 그때 `media` 는 **나중 호출의** 스트림이다.
+    if (!(await startCapture(gen))) return;
     await api.engine.reset();
+    if (gen !== generation) return;
     state.resting = false;
     lastProcessed = 0; // 켜자마자 한 장 읽는다 (한 주기를 기다리지 않게)
     rateMs = 0;
-    pump();
+    rearm();
     startWatchdog();
+    capturing = true;
     setStatus('인식 중…', 'on');
   } catch (e) {
     if (gen !== generation) return;
@@ -682,7 +832,7 @@ function setStatus(text, cls) {
 // ─────────────────────────────── 숫자 가르치기
 
 function drawTeachView() {
-  const frame = state.lastFrame;
+  const frame = state.teachFrame;
   const view = /** @type {HTMLCanvasElement} */ ($('teach-view'));
   view.classList.toggle('hidden', !frame);
   if (!frame) return;
@@ -691,25 +841,47 @@ function drawTeachView() {
   view.getContext('2d').putImageData(frame.image, 0, 0);
 }
 
+/**
+ * 가르칠 화면을 **얼린다** — 그림과 그 그림에서 읽힌 값을 같이 (state.teachFrame 참고).
+ * 자동이 꺼져 있어도 한 장은 잡는다 — 뭘 가르치는지 눈으로 보게.
+ */
+function grabTeachFrame() {
+  const live = state.auto ? state.lastFrame : null;
+  const frame = live || cropFrame();
+  if (!frame) {
+    state.teachFrame = null;
+    return;
+  }
+  // 회색조는 그림에서 새로 뽑는다 — 인식 쪽 버퍼(grayBuffer)는 다음 장이 덮어쓴다
+  state.teachFrame = {
+    image: frame.image,
+    gray: toGray(frame.image.data, frame.w * frame.h, new Uint8Array(frame.w * frame.h)),
+    w: frame.w,
+    h: frame.h,
+    read: live ? live.read : null,
+  };
+}
+
 function openTeach() {
   $('teach').classList.remove('hidden');
-  $('teach-msg').textContent = '';
-  if (!state.lastFrame) {
-    // 자동이 꺼져 있어도 한 장은 잡아 보여준다 — 뭘 가르치는지 눈으로 보게
-    const frame = cropFrame();
-    if (frame) state.lastFrame = frame;
-  }
-  drawTeachView(); // 잡힌 화면이 없으면 미리보기 자체를 숨긴다 (빈 검은 상자보다 낫다)
-  if (!state.lastFrame) teachMsg('먼저 [턴 영역]을 지정하고 [자동]을 한 번 켜주세요.', 'err');
+  teachMsg('', '');
+  grabTeachFrame();
+  showTeachFrame();
+}
 
-  // 지금 읽고 있는 값을 미리 넣어 준다 — 맞으면 그대로 [가르치기], 틀리면 고쳐서 누르면 된다.
-  // 가르치기는 "인식이 이상할 때" 여는 것이라, 맞는 값을 매번 손으로 치게 하면
-  // 귀찮아서 안 쓰게 된다. 정답은 어차피 사람이 확인한다.
+/** 얼린 화면을 보여주고, 그 화면에서 읽힌 값을 미리 넣는다 */
+function showTeachFrame() {
+  drawTeachView(); // 잡힌 화면이 없으면 미리보기 자체를 숨긴다 (빈 검은 상자보다 낫다)
+  if (!state.teachFrame) teachMsg('먼저 [턴 영역]을 지정하고 [자동]을 한 번 켜주세요.', 'err');
+
+  // **이 그림에서** 읽힌 값을 미리 넣어 준다 — 맞으면 그대로 [가르치기], 틀리면 고쳐서
+  // 누르면 된다. 가르치기는 "인식이 이상할 때" 여는 것이라, 맞는 값을 매번 손으로 치게
+  // 하면 귀찮아서 안 쓰게 된다. 정답은 어차피 사람이 확인한다.
+  // 이 그림에서 못 읽었으면 비워 둔다 — 다른 장에서 읽힌 값을 넣으면 그게 곧 틀린 짝이다.
   const input = /** @type {HTMLInputElement} */ ($('teach-value'));
-  if (!input.value && state.lastRead !== null) {
-    input.value = String(state.lastRead);
-    input.select();
-  }
+  const read = state.teachFrame ? state.teachFrame.read : null;
+  input.value = read !== null ? String(read) : '';
+  input.select();
   input.focus();
 }
 
@@ -720,13 +892,16 @@ function teachMsg(text, cls) {
 }
 
 async function saveTeach() {
-  const frame = state.lastFrame;
+  const frame = state.teachFrame;
   if (!frame) return teachMsg('보여줄 화면이 없어요 — [자동]을 한 번 켜주세요.', 'err');
   const value = $('teach-value').value.trim();
   const r = await api.engine.teach(frame.gray, frame.w, frame.h, value);
   if (!r.ok) return teachMsg(r.error, 'err');
   $('teach-value').value = '';
-  teachMsg(`숫자 ${r.added}개를 배웠어요 (모두 ${r.total}개). 이제 이 화면에서 훨씬 잘 읽습니다.`, 'ok');
+  teachMsg(
+    `숫자 ${r.added}개를 배웠어요 (모두 ${r.total}개). 다른 화면도 가르치려면 [다시 잡기]를 누르세요.`,
+    'ok',
+  );
 }
 
 // ─────────────────────────────── 빈 상태
@@ -791,8 +966,11 @@ $('btn-region').addEventListener('click', () => api.region.open());
 async function usePreset(save = true) {
   const preset = api.region.presets[0];
   if (!preset) return;
-  state.region = { displayId: state.region ? state.region.displayId : undefined, ...preset.region };
-  if (save) await api.config.set({ turnRegion: state.region });
+  const displayId = state.region ? state.region.displayId : undefined;
+  state.region = { displayId, ...preset.region };
+  // ★ 좌표 사본이 아니라 **어느 기본 위치인지**만 저장한다 (regions.js 의 resolveRegion).
+  // 사본을 저장하면 나중에 기본 위치를 고쳐도 이 단추를 한 번 누른 사람에게는 안 닿는다.
+  if (save) await api.config.set({ turnRegion: { preset: preset.id, displayId } });
   if (state.auto) {
     await toggleAuto(false);
     await toggleAuto(true);
@@ -907,6 +1085,11 @@ $('notion-url').addEventListener('keydown', (e) => {
 });
 
 $('teach-close').addEventListener('click', () => $('teach').classList.add('hidden'));
+$('teach-grab').addEventListener('click', () => {
+  teachMsg('', '');
+  grabTeachFrame();
+  showTeachFrame();
+});
 $('teach-save').addEventListener('click', saveTeach);
 $('teach-value').addEventListener('keydown', (e) => {
   if (e.key === 'Enter') saveTeach();
@@ -919,8 +1102,21 @@ $('teach-forget').addEventListener('click', async () => {
 $('btn-settings').addEventListener('click', () => {
   // 한 번에 하나만 — 둘 다 열면 정작 단계가 안 보인다
   $('teach').classList.add('hidden');
-  $('settings').classList.toggle('hidden');
+  const opening = $('settings').classList.toggle('hidden') === false;
+  if (opening) showRecordState();
 });
+
+/**
+ * 지금까지 담긴 전투 기록 — [전투 기록 저장]을 누르기 **전에** 뭐가 담겼는지 보여준다.
+ * 자동을 안 켜 두었으면 비어 있다는 걸 미리 알아야, 이상한 걸 본 뒤 눌렀는데
+ * "기록된 프레임이 없어요"를 보는 일이 없다.
+ */
+async function showRecordState() {
+  const d = await api.diag.state();
+  $('record-msg').textContent = d.frames
+    ? `담긴 기록 ${Math.round(d.spanMs / 1000)}초 · 표본 ${d.samples}장`
+    : '자동을 켜 두면 기록이 담겨요';
+}
 $('opacity').addEventListener('input', (e) => {
   const v = Number(e.target.value);
   applyOpacity(v);
@@ -931,12 +1127,17 @@ $('scale').addEventListener('input', (e) => {
   applyScale(v);
   api.config.set({ scale: v / 100 });
 });
+/** @type {any} 슬라이더를 놓고 잠시 뒤에 캡처 장수를 맞춘다 */
+let retuneTimer = null;
 $('tick').addEventListener('input', (e) => {
   state.tickMs = Number(e.target.value);
   $('tick-val').textContent = `${state.tickMs}ms`;
   api.config.set({ tickMs: state.tickMs });
-  // 주기는 바로 반영된다. 캡처 장수는 다음에 [자동]을 켤 때 맞춰진다 —
-  // 전투 중에 스트림을 다시 여는 것이 더 손해다.
+  // 주기는 읽기 문턱(readGate)으로 **바로** 먹는다. 캡처 장수는 슬라이더를 놓고 잠시
+  // 뒤에 한 번만 맞춘다 — 끄는 칸마다 스트림을 다시 열면 그게 더 손해다.
+  startWatchdog();
+  clearTimeout(retuneTimer);
+  retuneTimer = setTimeout(retuneCapture, 800);
 });
 $('btn-pick-file').addEventListener('click', async () => {
   const r = await api.catalog.pickFile();
@@ -969,9 +1170,6 @@ $('btn-quit').addEventListener('click', () => api.win.quit());
 
 api.keys.onNav((delta) => nav(delta));
 api.keys.onAutoToggle(() => toggleAuto(!state.auto));
-api.keys.onFailed((combos) =>
-  setStatus(`⚠️ 단축키 사용 불가: ${combos.join(', ')} (다른 프로그램이 사용 중)`, 'err'),
-);
 api.win.onClickThrough((on) => $('lock').classList.toggle('hidden', !on));
 api.catalog.onUpdated(() => loadCatalog());
 api.region.onPicked(async (region) => {
@@ -990,7 +1188,7 @@ window.addEventListener('beforeunload', stopCapture);
 
 (async () => {
   const config = await api.config.get();
-  state.region = config.turnRegion || null;
+  state.region = api.region.resolve(config.turnRegion);
   // 아직 한 번도 안 잡았으면 기본 위치로 시작한다 — 켜자마자 바로 써 볼 수 있게.
   // 저장은 안 한다: 사용자가 고른 값과 앱이 짐작한 값을 섞으면, 다음에 기본값을
   // 고쳤을 때 이미 저장돼 버린 옛 값에 발이 묶인다.
@@ -1012,5 +1210,15 @@ window.addEventListener('beforeunload', stopCapture);
     setStatus(`${api.region.presets[0].label} 자리로 시작합니다 — [자동]을 켜 보세요.`, '');
   } else if (state.region) {
     setStatus('턴 영역이 지정돼 있어요 — [자동]을 켜면 인식을 시작합니다.', '');
+  }
+
+  // 단축키 경고는 상태줄이 아니라 **따로 띠로** 둔다. 상태줄은 곧 다른 말로 덮이는데,
+  // 단축키가 막힌 건 앱을 끌 때까지 그대로다 — [자동]·단계 이동을 단축키로 하려던
+  // 사람은 왜 안 먹는지 계속 알아야 한다.
+  const failed = await api.keys.failures();
+  if (failed.length > 0) {
+    const warn = $('keys-warn');
+    warn.textContent = `⚠️ 단축키가 안 먹어요: ${failed.join(', ')} — 다른 프로그램이 먼저 쓰고 있어요`;
+    warn.classList.remove('hidden');
   }
 })();

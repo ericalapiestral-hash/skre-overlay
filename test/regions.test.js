@@ -6,7 +6,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
-const { DESTROYER, PRESETS } = require('../src/shared/regions');
+const { DESTROYER, PRESETS, resolveRegion } = require('../src/shared/regions');
 
 /** 1920×1080 화면에서 실제로 몇 픽셀 자리인지 */
 const px = (r) => ({
@@ -42,4 +42,19 @@ test('화면에 내보내는 목록이 비어 있지 않다', () => {
   assert.ok(PRESETS.length > 0);
   assert.deepStrictEqual(PRESETS[0].region, DESTROYER, '첫 항목이 파괴신이어야 한다');
   assert.ok(PRESETS[0].label.length > 0);
+});
+
+test('[기본 위치]는 좌표가 아니라 이름으로 저장되고, 읽을 때 지금 값으로 풀린다', () => {
+  // ★ 좌표 사본을 저장하면 DESTROYER 를 실제 화면에 맞게 고쳐도 [기본 위치]를 한 번이라도
+  // 누른 사람에게는 영영 안 닿는다
+  const moved = [{ id: 'destroyer', label: 'x', region: { fx: 0.5, fy: 0.5, fw: 0.1, fh: 0.1 } }];
+  assert.deepStrictEqual(resolveRegion({ preset: 'destroyer' }, moved), { fx: 0.5, fy: 0.5, fw: 0.1, fh: 0.1 });
+  assert.deepStrictEqual(resolveRegion({ preset: 'destroyer', displayId: 7 }), { displayId: 7, ...DESTROYER });
+  // 사람이 직접 잡은 값은 그대로
+  const picked = { displayId: 3, fx: 0.1, fy: 0.2, fw: 0.05, fh: 0.04 };
+  assert.deepStrictEqual(resolveRegion(picked), picked);
+  // 없어진 기본 위치 · 빈 값은 null — 화면이 처음 켤 때처럼 맨 앞 기본 위치로 시작한다
+  assert.strictEqual(resolveRegion({ preset: 'gone' }), null);
+  assert.strictEqual(resolveRegion(null), null);
+  assert.strictEqual(resolveRegion(undefined), null);
 });

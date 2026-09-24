@@ -121,6 +121,19 @@ test('앱이 실제로 뜨고 화면·프리로드·IPC가 이어진다', { skip
   assert.strictEqual(got.probe.catalog.builds, 2, '스킬 순서를 못 읽은 빌드도 목록에 남아야 한다');
   assert.ok(got.probe.config.includes('tickMs'), '설정 IPC가 기본값을 안 돌려준다');
   assert.strictEqual(got.probe.engine.fed, true, '엔진 IPC가 픽셀을 못 받았다');
+  // ★ 캡처 소스와 **그 화면의 실제 크기** — 렌더러가 이 크기를 캡처 제약에 못 박는다.
+  // 크기가 안 오면 크로미움이 1280×720으로 줄여 캡처한다 (CLAUDE.md "진짜 원인은 캡처였다")
+  assert.ok(got.probe.capture, `capture:source 가 답을 안 했다: ${JSON.stringify(got.probe)}`);
+  assert.strictEqual(got.probe.capture.id, 'string');
+  assert.ok(got.probe.capture.width > 0 && got.probe.capture.height > 0, '화면 크기를 안 돌려준다');
+  assert.strictEqual(got.probe.more, undefined, `IPC 왕복이 실패했다: ${JSON.stringify(got.probe.more)}`);
+  assert.strictEqual(got.probe.body, '본문만 있고 순서는 없다');
+  assert.ok(Array.isArray(got.probe.keys), '단축키 실패 목록을 못 받았다');
+  // 빈 화면으로는 못 가르친다 — 그래도 **답은 와야** 한다 (사람 말로)
+  assert.deepStrictEqual(got.probe.teach, { ok: false, error: 'string' });
+  assert.deepStrictEqual(got.probe.diag, ['frames', 'samples', 'spanMs']);
+  // 기본 위치로 시작했어도 설정에는 안 남는다
+  assert.strictEqual(got.probe.turnRegion, null, '앱이 짐작한 기본 위치를 설정에 저장했다');
 
   fs.rmSync(dir, { recursive: true, force: true });
 });

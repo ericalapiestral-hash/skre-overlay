@@ -128,11 +128,13 @@ body {
 }
 
 body.collapsed #main,
-body.collapsed #lock {
+body.collapsed #lock,
+body.collapsed #keys-warn {
   display: none;
 }
 
-#lock {
+#lock,
+#keys-warn {
   padding: 4px 10px;
   background: rgba(255, 198, 92, 0.16);
   color: var(--accent);

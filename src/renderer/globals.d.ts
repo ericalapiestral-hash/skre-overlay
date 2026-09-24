@@ -31,6 +31,7 @@ interface OverlayApi {
     open(): Promise<void>;
     onPicked(fn: (region: any) => void): () => void;
     presets: Array<{ id: string; label: string; region: { fx: number; fy: number; fw: number; fh: number } }>;
+    resolve(saved: any): { displayId?: number; fx: number; fy: number; fw: number; fh: number } | null;
   };
   capture: {
     source(displayId: number): Promise<{ sourceId: string; width: number; height: number } | null>;
@@ -50,14 +51,13 @@ interface OverlayApi {
   };
   win: {
     collapse(on: boolean): void;
-    clickThrough(on: boolean): void;
     quit(): void;
     onClickThrough(fn: (on: boolean) => void): () => void;
   };
   keys: {
     onNav(fn: (delta: number) => void): () => void;
     onAutoToggle(fn: () => void): () => void;
-    onFailed(fn: (combos: string[]) => void): () => void;
+    failures(): Promise<string[]>;
   };
 }
 

@@ -6,7 +6,7 @@
 'use strict';
 
 const { contextBridge, ipcRenderer } = require('electron');
-const { PRESETS } = require('../shared/regions');
+const { PRESETS, resolveRegion } = require('../shared/regions');
 
 /** 메인 → 렌더러 알림. 해제 함수를 돌려준다 */
 function on(channel, handler) {
@@ -36,6 +36,8 @@ contextBridge.exposeInMainWorld('overlay', {
     onPicked: (fn) => on('turn:region', fn),
     /** 콘텐츠별 기본 위치 — 사람이 매번 드래그하지 않아도 되게 (src/shared/regions.js) */
     presets: PRESETS,
+    /** 설정에 저장된 영역 → 읽을 자리 (기본 위치는 이름으로 저장된다) */
+    resolve: (saved) => resolveRegion(saved),
   },
   capture: {
     source: (displayId) => ipcRenderer.invoke('capture:source', displayId),
@@ -51,19 +53,20 @@ contextBridge.exposeInMainWorld('overlay', {
   },
   /** 전투 기록 — 실제 게임에서 벌어진 일을 시나리오로 뽑아낸다 */
   diag: {
+    /** 지금까지 담긴 기록 — 설정을 열 때 보여준다 (눌러 보기 전에 뭐가 담겼는지 알게) */
     state: () => ipcRenderer.invoke('diag:state'),
     save: () => ipcRenderer.invoke('diag:save'),
     reveal: (file) => ipcRenderer.invoke('diag:reveal', file),
   },
   win: {
     collapse: (on_) => ipcRenderer.send('overlay:collapse', on_),
-    clickThrough: (on_) => ipcRenderer.send('overlay:click-through', on_),
     quit: () => ipcRenderer.send('overlay:quit'),
     onClickThrough: (fn) => on('overlay:click-through', fn),
   },
   keys: {
     onNav: (fn) => on('step:nav', fn),
     onAutoToggle: (fn) => on('auto:toggle', fn),
-    onFailed: (fn) => on('shortcuts:failed', fn),
+    /** 등록 못 한 단축키 — 다른 프로그램이 먼저 잡은 것 */
+    failures: () => ipcRenderer.invoke('keys:failures'),
   },
 });
