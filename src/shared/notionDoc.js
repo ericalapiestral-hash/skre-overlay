@@ -12,11 +12,17 @@
 const { parseBuild } = require('./steps');
 
 /**
- * @typedef {{title: string, url?: string, markdown?: string,
+ * @typedef {{title: string, url?: string, markdown?: string, how?: string,
+ *            failed?: boolean, error?: string,
  *            children?: NotionPage[]}} NotionPage
+ *   how    어느 방법으로 긁혔는지 (main/notion.js 의 pickBody 결과)
+ *   failed 못 연 페이지 — 제목과 주소만 있다
  * @typedef {{id: string, name: string, label: string, group: string,
  *            category: string, weekdays: string[], body: string,
- *            url: string|null}} CatalogBuild
+ *            url: string|null, how?: string, stale?: boolean,
+ *            failed?: boolean}} CatalogBuild
+ *   stale  이번에 못 열어서 **지난번 도감에서 되살린** 빌드
+ *   failed 지난번 도감에도 없어서 ⚠ 로만 남긴 빌드 (본문은 안내 문구)
  */
 
 /** 묶음 이름을 이어 붙이는 기호 — 길드봇이 쓰던 것과 같게 (`강림 - 파괴신 › 파이`) */
@@ -100,17 +106,72 @@ function looksLikeBuild(page) {
 /**
  * 페이지 나무를 훑어 빌드를 모은다.
  *
+ * **못 연 페이지(`failed`)를 건너뛰지 않는다.** 한 장이 끊기면 그 아래 빌드들이
+ * 새 도감에서 통째로 빠지는데, 받기는 성공으로 끝나 사람은 모른다 — 이 프로젝트가
+ * 제일 먼저 고친 "빌드가 안 보인다"가 조용히 되살아난다. 그래서:
+ *  1. **지난번 도감(previous)에서 그 자리를 되살린다** — 같은 페이지 id 거나,
+ *     그 페이지 아래 묶음에 있던 빌드들. `stale: true` 를 붙인다.
+ *  2. 지난번에도 없던 자리면 **⚠ 빌드로 남긴다** — 본문은 "못 열었다"는 안내.
+ *
  * @param {NotionPage} root 맨 위 페이지 (이 페이지 자체는 묶음 이름에 안 넣는다 —
  *   "PVE › 강림 - 파괴신 › 파이"가 아니라 "강림 - 파괴신 › 파이"가 되게)
- * @param {{syncedAt?: string, maxBuilds?: number}} [options]
- * @returns {{title: string, syncedAt: string, builds: CatalogBuild[]}}
+ * @param {{syncedAt?: string, maxBuilds?: number,
+ *          previous?: {builds?: any[]}|null}} [options]
+ *   previous 지난번에 받아 둔 도감 (없으면 되살릴 것도 없다)
+ * @returns {{title: string, syncedAt: string, builds: CatalogBuild[],
+ *            restored: number, missing: number}}
+ *   restored 지난번 도감에서 되살린 빌드 수 · missing ⚠ 로만 남긴 빌드 수
+ *   (이 둘은 화면에 알리는 용도라 부르는 쪽이 파일에는 안 쓴다)
  */
 function toCatalog(root, options = {}) {
   const syncedAt = options.syncedAt || new Date().toISOString();
   const maxBuilds = options.maxBuilds || 2000;
+  const previous = options.previous && Array.isArray(options.previous.builds) ? options.previous.builds : [];
   /** @type {CatalogBuild[]} */
   const builds = [];
   const seen = new Set();
+  let restored = 0;
+  let missing = 0;
+
+  /**
+   * 못 연 페이지 자리 — 지난번 도감에서 되살리거나, ⚠ 로 남긴다.
+   * @param {NotionPage} page
+   * @param {string[]} trail
+   */
+  function recover(page, trail) {
+    const id = buildId(page, trail);
+    const under = [...trail, page.title].join(SEP);
+    const olds = previous.filter(
+      (b) => b && (b.id === id || b.group === under || String(b.group || '').startsWith(under + SEP)),
+    );
+    if (olds.length > 0) {
+      for (const b of olds) {
+        if (seen.has(b.id) || builds.length >= maxBuilds) continue;
+        seen.add(b.id);
+        builds.push({ ...b, stale: true });
+        restored += 1;
+      }
+      return;
+    }
+    if (seen.has(id)) return;
+    seen.add(id);
+    const parts = [...trail, page.title];
+    builds.push({
+      id,
+      name: `⚠ ${page.title}`,
+      label: `⚠ ${page.title}`,
+      group: trail.join(SEP),
+      category: categoryOf(parts),
+      weekdays: weekdaysOf(parts),
+      body:
+        `이 페이지를 못 열었어요${page.error ? ` (${page.error})` : ''}.\n` +
+        '설정(⚙)의 [노션에서 받기]를 다시 눌러 보세요.\n\n' +
+        (page.url || ''),
+      url: page.url || null,
+      failed: true,
+    });
+    missing += 1;
+  }
 
   /**
    * @param {NotionPage} page
@@ -118,6 +179,10 @@ function toCatalog(root, options = {}) {
    */
   function walk(page, trail) {
     if (!page || builds.length >= maxBuilds) return;
+    if (page.failed) {
+      recover(page, trail);
+      return;
+    }
     if (looksLikeBuild(page)) {
       const id = buildId(page, trail);
       // 같은 id가 두 번 나오면(같은 페이지를 두 자리에서 가리키는 경우) 한 번만 싣는다
@@ -133,6 +198,7 @@ function toCatalog(root, options = {}) {
           weekdays: weekdaysOf(parts),
           body: String(page.markdown || ''),
           url: page.url || null,
+          ...(page.how ? { how: page.how } : {}),
         });
       }
     }
@@ -143,7 +209,7 @@ function toCatalog(root, options = {}) {
   // 맨 위 페이지 자체에 순서가 적혀 있는 경우도 놓치지 않는다
   if (root && looksLikeBuild(root) && !(root.children || []).length) walk(root, []);
 
-  return { title: (root && root.title) || '도감', syncedAt, builds };
+  return { title: (root && root.title) || '도감', syncedAt, builds, restored, missing };
 }
 
 /**

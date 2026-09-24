@@ -15,7 +15,11 @@
      뜸을 들인다 (느린 회선 흉내). 뜸 한 번을 "다 내려왔다"로 보고 멈추는 코드는
      2단계를 영영 못 불러온다 — 오류도 없이 페이지 절반이 조용히 사라진다.
    · 세 방법이 각각 글을 뽑아내고, pickBody 가 제일 나은 것을 고르는가
+   · 표를 **그 자리에서** 줄로 푸는가 — 예전엔 표 줄을 문서 맨 끝에 모아 붙여서,
+     뒤에 오는 "# 메모" 제목 뒤로 밀려 스킬 순서 섹션 밖으로 잘렸다
    · 하위 페이지 링크를 찾아내는가
+
+  시험은 이 페이지를 **창 하나로 여러 번** 긁는다 (앱이 창 하나로 수십 장을 돌듯이).
 -->
 <style>
   .notion-scroller { height: 400px; overflow: auto; }
@@ -36,12 +40,17 @@
       '  <div class="notion-sub_header-block">스킬 순서</div>',
       '  <div class="notion-sub_sub_header-block">1라운드</div>',
       '  <div class="notion-text-block">`0턴`비스킷 아래 / `4턴`나타 아래</div>',
+      '  <div class="notion-table-block"><table><tbody>',
+      '    <tr><td>`6턴`</td><td>세인 위 (표)</td></tr>',
+      '  </tbody></table></div>',
       '  <div class="notion-toggle-block">',
       '    <div role="button" aria-expanded="false">2라운드 (접힘)</div>',
       '    <div class="toggle-body" hidden></div>',
       '  </div>',
       '  <div class="tall"></div>',
       '  <div id="lazy"></div>',
+      '  <div class="notion-header-block">메모</div>',
+      '  <div class="notion-text-block">보스 체력이 절반 아래면 세인을 아낀다.</div>',
       '  <div class="notion-page-block"><a href="/aaaaaaaabbbbccccddddeeeeffff0000">하위 빌드</a></div>',
       '</div>',
     ].join('\n');

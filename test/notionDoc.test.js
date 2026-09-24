@@ -25,7 +25,7 @@ const BODY = [
 /** PVE(맨 위) › 강림 - 파괴신 › 파이 › 파이 세인 4턴 */
 const TREE = {
   title: 'PVE',
-  url: 'https://x.notion.site/PVE-3ce783623a1c8014bd01c2b2ce3562f0',
+  url: 'https://x.notion.site/PVE-0123456789abcdef0123456789abcdef',
   markdown: '',
   children: [
     {
@@ -133,8 +133,8 @@ test('요일을 집어낸다', () => {
 
 test('주소에서 페이지 id를 뽑는다', () => {
   assert.strictEqual(
-    pageIdOf('https://damageamplification.notion.site/PVE-3ce783623a1c8014bd01c2b2ce3562f0'),
-    '3ce783623a1c8014bd01c2b2ce3562f0',
+    pageIdOf('https://someguild.notion.site/PVE-0123456789abcdef0123456789abcdef'),
+    '0123456789abcdef0123456789abcdef',
   );
   assert.strictEqual(pageIdOf('https://x.notion.site/그냥-페이지'), '');
   assert.strictEqual(pageIdOf(undefined), '');
@@ -248,4 +248,61 @@ test('빈 입력에도 안전하다', () => {
   assert.strictEqual(pickBody([]).how, 'none');
   assert.strictEqual(pickBody(/** @type {any} */ (null)).how, 'none');
   assert.strictEqual(pickBody(/** @type {any} */ ([null, undefined, { how: 'x' }])).how, 'none');
+});
+
+test('못 연 페이지 자리는 지난번 도감에서 되살리고, 없으면 ⚠ 로 남긴다', () => {
+  // ★ 예전엔 못 연 페이지가 나무에서 통째로 빠지고 받기는 "성공"으로 끝나서, 잘 받아 둔
+  // 도감이 **조용히 줄어든** 도감으로 덮어써졌다 — "빌드가 안 보인다"가 되살아난다.
+  const leafId = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+  const previous = {
+    builds: [
+      { id: leafId, name: '파이 세인', label: '파이 세인', group: '파괴신', body: '`0턴` 세인', url: `https://g.notion.site/x-${leafId}` },
+      { id: 'b1', name: '밑 빌드 1', label: '밑 빌드 1', group: '공성전 › 월요일', body: '`0턴` 가', url: null },
+      { id: 'b2', name: '밑 빌드 2', label: '밑 빌드 2', group: '공성전 › 월요일 › 더 밑', body: '`0턴` 나', url: null },
+      { id: 'b3', name: '딴 데', label: '딴 데', group: '공성전 › 화요일', body: '`0턴` 다', url: null },
+    ],
+  };
+  const root = {
+    title: 'PVE',
+    children: [
+      {
+        title: '파괴신',
+        markdown: '# 파괴신',
+        children: [
+          { title: '파이 세인', url: `https://g.notion.site/x-${leafId}`, markdown: '', failed: true, children: [] },
+          { title: '새 빌드', markdown: '`0턴` 새것', how: 'semantic', children: [] },
+        ],
+      },
+      {
+        title: '공성전',
+        markdown: '# 공성전',
+        children: [
+          { title: '월요일', markdown: '', failed: true, error: 'ERR_CONNECTION_RESET', children: [] },
+          { title: '처음 보는 곳', markdown: '', failed: true, children: [] },
+        ],
+      },
+    ],
+  };
+  const cat = toCatalog(root, { previous });
+  const byName = Object.fromEntries(cat.builds.map((b) => [b.name, b]));
+  // 같은 페이지 id 면 그 빌드를 그대로 되살린다
+  assert.strictEqual(byName['파이 세인'].stale, true);
+  assert.strictEqual(byName['파이 세인'].body, '`0턴` 세인');
+  // 묶음 페이지를 못 열었으면 그 아래에 있던 빌드들을 되살린다 (옆 묶음은 안 건드린다)
+  assert.ok(byName['밑 빌드 1'] && byName['밑 빌드 1'].stale);
+  assert.ok(byName['밑 빌드 2'] && byName['밑 빌드 2'].stale);
+  assert.ok(!byName['딴 데'], '못 연 페이지와 상관없는 옛 빌드까지 되살렸다');
+  // 지난번에도 없던 자리는 ⚠ 로 — 숨기지 않는다
+  const warn = byName['⚠ 처음 보는 곳'];
+  assert.ok(warn && warn.failed, `⚠ 빌드가 없다: ${cat.builds.map((b) => b.name).join(', ')}`);
+  assert.match(warn.body, /못 열었어요/);
+  assert.strictEqual(cat.restored, 3);
+  assert.strictEqual(cat.missing, 1);
+  // 새로 받은 빌드는 긁은 방법을 달고 간다 (화면이 빌드 기준으로 센다)
+  assert.strictEqual(byName['새 빌드'].how, 'semantic');
+
+  // 지난번 도감이 없으면 전부 ⚠
+  const fresh = toCatalog(root);
+  assert.strictEqual(fresh.restored, 0);
+  assert.strictEqual(fresh.missing, 3);
 });

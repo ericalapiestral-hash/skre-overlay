@@ -15,6 +15,11 @@ interface OverlayApi {
       pages?: number;
       builds?: number;
       how?: Record<string, number>;
+      noSteps?: number;
+      failed?: number;
+      failedTitles?: string[];
+      restored?: number;
+      missing?: number;
     }>;
     onSyncProgress(fn: (p: { done: number; title: string }) => void): () => void;
     dumpNotion(url: string): Promise<{ ok: boolean; error?: string; file?: string }>;

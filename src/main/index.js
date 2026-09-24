@@ -20,8 +20,9 @@ const { createStore } = require('./config');
 const { resolvePath, loadCatalog, watchCatalog, candidatePaths } = require('./catalog');
 const { createEngine } = require('./engine');
 const { createRecorder } = require('./recorder');
-const { fetchTree, dumpDiagnostics } = require('./notion');
+const { fetchTree, dumpDiagnostics, isNotionUrl } = require('./notion');
 const { toCatalog } = require('../shared/notionDoc');
+const { parseBuild } = require('../shared/steps');
 const { pickSource } = require('../shared/capture');
 const { loadTemplates } = require('../shared/turnReader');
 
@@ -31,7 +32,10 @@ const DOCTOR = process.argv.includes('--doctor');
 // 단위 테스트는 순수 로직만 보므로 Electron·창·프리로드·IPC가 부러진 건 아무도 못 잡는다.
 const SMOKE = process.argv.includes('--smoke');
 // 노션 긁는 기계를 시험용 페이지로 한 번 돌려 본다 (test/notionScrape.test.js)
-const NOTION_SELFTEST = process.argv.find((a) => a.startsWith('--notion-selftest='));
+// 여러 번 주면 **창 하나로 차례로** 긁는다 — 앱이 창 하나로 수십 장을 도는 것과 같게
+const NOTION_SELFTEST = process.argv
+  .filter((a) => a.startsWith('--notion-selftest='))
+  .map((a) => a.slice('--notion-selftest='.length));
 
 const RENDERER = path.join(__dirname, '..', 'renderer');
 const PRELOAD = path.join(__dirname, '..', 'preload');
@@ -53,6 +57,26 @@ let engine = null;
 let recorder = null;
 /** 마지막으로 읽은 도감 — 본문과 단계 자료는 여기 남고 화면으로는 안 나간다 */
 let catalog = null;
+
+// ─────────────────────────────── 바탕화면에 남기는 파일
+
+/**
+ * 바탕화면 파일 자리 — `skre-기록-20260904-153012.json` 처럼 **초까지** 넣는다.
+ *
+ * 예전엔 `toLocaleString` 에서 기호를 지우고 13자로 잘라서 "분 + 초의 십의 자리"라는
+ * 어중간한 이름(2026090415301)이 됐다. 문서 예시와 달라 사람이 파일을 찾을 때 헷갈렸고,
+ * 10초 안에 두 번 누르면 앞 파일을 조용히 덮어썼다. 같은 이름이 있으면 `-2` 를 붙인다.
+ */
+function desktopFile(prefix, now = new Date()) {
+  const p2 = (n) => String(n).padStart(2, '0');
+  const stamp =
+    `${now.getFullYear()}${p2(now.getMonth() + 1)}${p2(now.getDate())}-` +
+    `${p2(now.getHours())}${p2(now.getMinutes())}${p2(now.getSeconds())}`;
+  const dir = app.getPath('desktop');
+  let file = path.join(dir, `${prefix}-${stamp}.json`);
+  for (let n = 2; fs.existsSync(file); n += 1) file = path.join(dir, `${prefix}-${stamp}-${n}.json`);
+  return file;
+}
 
 // ─────────────────────────────── 도감
 
@@ -306,7 +330,20 @@ function registerIpc() {
    * buildsPath 가 그 파일을 가리키게 한다. 그래서 이 아래로는 손댈 것이 없다 —
    * 파일 도감이든 노션 도감이든 catalog.js 부터는 똑같이 흐른다.
    */
+  // 받기는 몇십 초 걸린다. 그 사이 Enter 를 한 번 더 누르면 숨긴 창이 하나 더 떠서
+  // 같은 도감을 두 번 긁었다 (단추만 막고 입력칸 Enter 는 안 막았다). 여기서 한 번 더 막는다.
+  let syncing = false;
   ipcMain.handle('catalog:sync-notion', async (_e, url) => {
+    if (syncing) return { ok: false, error: '이미 받는 중이에요. 끝날 때까지 기다려 주세요.' };
+    syncing = true;
+    try {
+      return await syncNotion(url);
+    } finally {
+      syncing = false;
+    }
+  });
+
+  async function syncNotion(url) {
     const address = String(url || '').trim() || store.load().notionUrl;
     if (!address) return { ok: false, error: '노션 도감 주소를 먼저 넣어주세요.' };
 
@@ -319,6 +356,16 @@ function registerIpc() {
     // 그러면 [페이지 저장]마저 "주소를 먼저 넣어주세요"가 뜬다 — 정작 고칠 자료를
     // 뜨려는 참인데. 잘 되는 길보다 **안 될 때의 길**이 막히면 안 된다.
     store.save({ notionUrl: address });
+
+    // 노션 주소가 아니면 **덤프 없이** 곧바로 돌려준다. 예전엔 주소 오타 하나에 20초를
+    // 기다린 뒤 노션과 무관한 페이지를 바탕화면에 뜨고 "이 파일을 주시면 고칠 수
+    // 있습니다"라고 했다 — 고칠 것은 파일이 아니라 주소다.
+    if (!isNotionUrl(address)) {
+      return {
+        ok: false,
+        error: '노션 공개 페이지 주소가 아니에요. 노션에서 [공유 → 웹에 게시]한 주소(…notion.site/…)를 넣어주세요.',
+      };
+    }
 
     const got = await fetchTree(address, {
       onProgress: (done, title) => send('catalog:sync-progress', { done, title }),
@@ -334,7 +381,15 @@ function registerIpc() {
       };
     }
 
-    const built = toCatalog(got.page);
+    const file = path.join(app.getPath('userData'), 'builds-notion.json');
+    // 지난번에 받아 둔 도감 — 이번에 못 연 페이지 자리를 여기서 되살린다 (notionDoc.toCatalog)
+    let previous = null;
+    try {
+      previous = JSON.parse(fs.readFileSync(file, 'utf8'));
+    } catch {
+      previous = null; // 처음 받는 것이면 없다
+    }
+    const built = toCatalog(got.page, { previous });
     if (built.builds.length === 0) {
       // 여기서 조용히 성공했다고 하면 안 된다 — 빈 도감이 남고 원인을 못 찾는다.
       //
@@ -352,9 +407,10 @@ function registerIpc() {
       };
     }
 
-    const file = path.join(app.getPath('userData'), 'builds-notion.json');
     try {
-      fs.writeFileSync(file, JSON.stringify(built, null, 1), 'utf8');
+      // restored·missing 은 화면에 알리는 값이라 파일에는 안 쓴다 (builds.json 모양 그대로)
+      const { title, syncedAt, builds } = built;
+      fs.writeFileSync(file, JSON.stringify({ title, syncedAt, builds }, null, 1), 'utf8');
     } catch (e) {
       return { ok: false, error: `받아온 도감을 저장하지 못했어요: ${e instanceof Error ? e.message : e}` };
     }
@@ -362,10 +418,36 @@ function registerIpc() {
     refreshCatalog();
     rewatch();
     // 도감 자체는 안 돌려준다 — 화면이 catalog:load 로 가벼운 목록만 다시 받는다.
-    // how 는 **어느 방법으로 긁혔는지** — 'notion' 이 아니면 선택자가 밀렸다는 뜻이라
-    // 알아야 고칠 수 있다 (main/notion.js 의 세 가지 방법 참고).
-    return { ok: true, pages: got.pages, builds: built.builds.length, how: got.how };
-  });
+    //
+    // how 는 **단계를 읽어낸 빌드만** 어느 방법으로 긁혔는지 센다. 예전엔 방문한 페이지
+    // 전부를 셌는데, 링크만 있는 묶음 페이지는 늘 'plain'으로 뽑혀서(노션 방법은 하위
+    // 페이지 블록의 글을 안 싣는다) "plain 10"이 **묶음 페이지 수**였을 뿐인데도 선택자가
+    // 밀린 것처럼 보였다. 빌드 기준으로 세면 'notion' 이 아닌 게 있을 때만 진짜 신호다.
+    const how = {};
+    let noSteps = 0;
+    for (const b of built.builds) {
+      if (b.stale || b.failed) continue;
+      if (parseBuild(b.body).stepCount === 0) {
+        noSteps += 1;
+        continue;
+      }
+      const k = b.how || '?';
+      how[k] = (how[k] || 0) + 1;
+    }
+    return {
+      ok: true,
+      pages: got.pages,
+      builds: built.builds.length,
+      how,
+      noSteps,
+      // ★ 못 연 페이지를 **화면에 알린다.** 예전엔 여기서 버려서 "빌드 N개를 받았어요"만
+      // 떴고, 그 아래 빌드들이 사라진 걸 아무도 몰랐다.
+      failed: got.failed.length,
+      failedTitles: got.failed.slice(0, 3).map((f) => f.title || f.url),
+      restored: built.restored,
+      missing: built.missing,
+    };
+  }
 
   /**
    * 노션 페이지를 **떠서 바탕화면에 저장한다.**
@@ -376,10 +458,10 @@ function registerIpc() {
    * (전투 기록과 같은 이유·같은 자리다 — 사람이 찾아서 보내 줄 수 있어야 쓸모가 있다.)
    */
   async function saveNotionDump(address) {
+    if (!isNotionUrl(address)) return '';
     try {
       const diag = await dumpDiagnostics(address);
-      const stamp = new Date().toLocaleString('sv-SE').replace(/[-: ]/g, '').slice(0, 13);
-      const file = path.join(app.getPath('desktop'), `skre-노션-${stamp}.json`);
+      const file = desktopFile('skre-노션');
       fs.writeFileSync(file, JSON.stringify(diag, null, 1), 'utf8');
       return file;
     } catch {
@@ -390,6 +472,7 @@ function registerIpc() {
   ipcMain.handle('catalog:dump-notion', async (_e, url) => {
     const address = String(url || '').trim() || store.load().notionUrl;
     if (!address) return { ok: false, error: '노션 도감 주소를 먼저 넣어주세요.' };
+    if (!isNotionUrl(address)) return { ok: false, error: '노션 공개 페이지 주소가 아니에요 (…notion.site/…).' };
     const file = await saveNotionDump(address);
     return file
       ? { ok: true, file }
@@ -508,12 +591,7 @@ function registerIpc() {
    */
   ipcMain.handle('diag:save', () => {
     if (!recorder.frameCount) return { ok: false, error: '기록된 프레임이 없어요. 자동을 켜고 잠시 둔 뒤 눌러 주세요.' };
-    const stamp = new Date()
-      .toLocaleString('sv-SE')
-      .replace(/[-: ]/g, '')
-      .slice(0, 13);
-    const dir = app.getPath('desktop');
-    const file = path.join(dir, `skre-기록-${stamp}.json`);
+    const file = desktopFile('skre-기록');
     try {
       fs.writeFileSync(file, JSON.stringify(recorder.dump(), null, 1));
     } catch (e) {
@@ -638,29 +716,38 @@ function doctor() {
  *
  * 여기서 걸리는 것: 숨긴 창에서 JS 가 안 도는 경우, executeJavaScript 가 막히는 경우,
  * PREPARE 가 토글을 못 펴거나 스크롤이 안 먹는 경우, 추출 스크립트의 문법 오류.
+ *
+ * ★ 주소를 여러 개 받으면 **창 하나로 차례로** 긁는다. 앱(fetchTree)이 창 하나로
+ * 수십 장을 돌기 때문이다. 예전엔 새 프로세스의 첫 장 하나만 긁었는데, 숨긴 창은
+ * **둘째 장부터** 화면 갱신이 더 드물어져서 늦게 붙는 부분을 더 자주 놓쳤다 — 시험은
+ * 앱이 겪지 않는 가장 좋은 조건만 재고 있었다 (이 프로젝트가 네 번째로 한 실수).
  */
-async function notionSelftest(url) {
+async function notionSelftest(urls) {
   const { createBrowser, scrapePage } = require('./notion');
   const { pickBody } = require('../shared/notionDoc');
   const win = createBrowser();
-  let out;
+  const pages = [];
+  let error = '';
   try {
-    const got = await scrapePage(win, url, { timeout: 15000 });
-    const best = pickBody(got.candidates);
-    out = {
-      ok: true,
-      title: got.title,
-      prepared: got.prepared,
-      links: got.links,
-      picked: { how: best.how, stepCount: best.stepCount, strategy: best.strategy, groups: best.groups },
-      candidates: got.candidates.map((c) => ({ how: c.how, markdown: c.markdown })),
-    };
+    for (const url of urls) {
+      const got = await scrapePage(win, url, { timeout: 15000 });
+      const best = pickBody(got.candidates);
+      pages.push({
+        url,
+        title: got.title,
+        prepared: got.prepared,
+        links: got.links,
+        picked: { how: best.how, stepCount: best.stepCount, strategy: best.strategy, groups: best.groups },
+        candidates: got.candidates.map((c) => ({ how: c.how, markdown: c.markdown })),
+      });
+    }
   } catch (e) {
-    out = { ok: false, error: e instanceof Error ? e.message : String(e) };
-  } finally {
-    if (!win.isDestroyed()) win.destroy();
+    error = e instanceof Error ? e.message : String(e);
   }
+  const out = { ok: !error, error, pages };
+  // 창을 닫기 **전에** 뱉는다 — 마지막 창이 닫히면 window-all-closed 가 앱을 끝낸다
   process.stdout.write(`\nSKRE_NOTION ${JSON.stringify(out)}\n`);
+  if (!win.isDestroyed()) win.destroy();
   app.exit(out.ok ? 0 : 1);
 }
 
@@ -747,8 +834,11 @@ function smoke() {
 // 게임 위에 뜨는 도구라 GPU 가속 문제로 투명창이 검게 나오는 기기가 있다
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion');
 
-// 두 벌이 같이 뜨면 전역 단축키를 서로 뺏어 둘 다 안 듣는다
-if (!DOCTOR && !app.requestSingleInstanceLock()) {
+// 두 벌이 같이 뜨면 전역 단축키를 서로 뺏어 둘 다 안 듣는다.
+// 노션 자가 시험은 잠금을 안 잡는다 — 잡으면 개발자가 앱을 켜 둔 채 시험하거나 시험이
+// 두 벌 겹칠 때 늦게 뜬 쪽이 **아무 말 없이** 끝나서 "결과를 안 남겼다"로 빨개진다.
+const SOLO = DOCTOR || NOTION_SELFTEST.length > 0;
+if (!SOLO && !app.requestSingleInstanceLock()) {
   app.quit();
 } else {
   app.on('second-instance', () => {
@@ -767,15 +857,17 @@ if (!DOCTOR && !app.requestSingleInstanceLock()) {
       app.exit(doctor());
       return;
     }
+    // 노션 자가 시험에는 오버레이·단축키·도감 감시가 필요 없다 — 띄우면 개발자의 실제
+    // 설정과 도감을 읽으며 CPU를 나눠 써서 재는 조건만 흐린다
+    if (NOTION_SELFTEST.length > 0) {
+      notionSelftest(NOTION_SELFTEST);
+      return;
+    }
 
     registerIpc();
     createOverlay();
     rewatch();
     registerShortcuts();
-    if (NOTION_SELFTEST) {
-      notionSelftest(NOTION_SELFTEST.slice('--notion-selftest='.length));
-      return;
-    }
     if (SMOKE) smoke();
   });
 

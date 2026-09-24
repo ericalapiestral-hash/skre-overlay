@@ -1,6 +1,6 @@
 // 전투 기록 되돌려 보기 — 실제 게임에서 받은 기록 파일을 여기서 그대로 재생한다.
 //
-//   node tools/replay.js ~/바탕화면/skre-기록-20260904-1530.json
+//   node tools/replay.js ~/바탕화면/skre-기록-20260904-153012.json
 //   node tools/replay.js 기록.json --from 120 --to 180   (프레임 구간만)
 //   node tools/replay.js 기록.json --scenario 이름       (시나리오로 뽑아낸다)
 //

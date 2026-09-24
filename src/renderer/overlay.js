@@ -806,6 +806,8 @@ $('btn-teach').addEventListener('click', () => {
 async function syncNotion() {
   const input = /** @type {HTMLInputElement} */ ($('notion-url'));
   const button = /** @type {HTMLButtonElement} */ ($('btn-notion'));
+  // 받는 중에 Enter 를 또 누르면 같은 도감을 두 번 긁었다 (단추만 막고 Enter 는 안 막았다)
+  if (button.disabled) return;
   const url = input.value.trim();
   if (!url) {
     notionMsg('노션 도감 주소를 넣어주세요.', 'err');
@@ -820,10 +822,24 @@ async function syncNotion() {
       notionMsg(r.error, 'err');
       return;
     }
-    // 어느 방법으로 긁혔는지도 같이 보여준다 — 'notion'이 아니면 선택자가 밀렸다는
-    // 뜻이라, 그걸 알아야 [페이지 저장]으로 고칠 수 있다 (main/notion.js 참고)
+    // 단계를 읽은 빌드가 어느 방법으로 긁혔는지도 보여준다. **빌드 기준**으로 센다 —
+    // 예전엔 묶음 페이지까지 세서 "plain 10"이 묶음 페이지 수였을 뿐인데 선택자가 밀린
+    // 것처럼 보였다. 빌드 기준으로 'notion' 이 아닌 게 있으면 그때가 진짜 신호다.
     const how = r.how ? Object.entries(r.how).map(([k, n]) => `${k} ${n}`).join(' · ') : '';
-    notionMsg(`빌드 ${r.builds}개를 받았어요 (페이지 ${r.pages}개${how ? ` · 긁은 방법 ${how}` : ''}).`, 'ok');
+    const parts = [`페이지 ${r.pages}개`];
+    if (how) parts.push(`단계 읽음: ${how}`);
+    if (r.noSteps) parts.push(`순서 못 읽음 ${r.noSteps}개(본문으로 표시)`);
+    let text = `빌드 ${r.builds}개를 받았어요 (${parts.join(' · ')}).`;
+    // ★ 못 연 페이지는 **반드시** 알린다. 예전엔 여기서 조용히 넘어가 그 아래 빌드들이
+    // 사라진 걸 아무도 몰랐다.
+    if (r.failed) {
+      const names = (r.failedTitles || []).join(', ');
+      text += ` ⚠ 페이지 ${r.failed}개를 못 열었어요${names ? ` (${names}${r.failed > 3 ? ' …' : ''})` : ''}`;
+      if (r.restored) text += ` — 그 자리는 지난번에 받은 빌드 ${r.restored}개로 채웠어요`;
+      if (r.missing) text += `${r.restored ? ',' : ' —'} ⚠ 표시 빌드 ${r.missing}개`;
+      text += '. 다시 받아 보세요.';
+    }
+    notionMsg(text, r.failed ? 'err' : 'ok');
     await loadCatalog({ first: true });
   } catch (e) {
     notionMsg(`노션에서 못 받았어요: ${e.message}`, 'err');

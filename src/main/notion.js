@@ -13,8 +13,9 @@
 // 두므로 느린 건 처음 한 번뿐이다.
 //
 // ⚠ **여기 있는 선택자(.notion-…-block)는 실제 페이지로 확인하지 못했다.**
-// 이 저장소가 도는 곳에서는 notion.site 접속이 막혀 있다. 처음 돌려 보고 안 긁히면
-// `--notion-dump` 로 실제 HTML을 떠서 고칠 것 (아래 dumpHtml).
+// 이 저장소가 도는 곳에서는 notion.site 접속이 막혀 있다. 안 긁히면 사용자에게
+// 설정의 **[페이지 저장]**(catalog:dump-notion → 아래 dumpDiagnostics)으로 실제 HTML과
+// 세 방법이 뽑은 글을 떠 달라고 해서 고칠 것.
 'use strict';
 
 const { BrowserWindow } = require('electron');
@@ -67,11 +68,27 @@ const PREPARE = `(async () => {
   // 거기서 멈춰 **페이지 절반을 조용히 버렸다.** 오류도 안 나고 빌드 수만 줄어든다.
   // 실제로 시험용 페이지에서 CPU를 물려 놓으면 세 번에 한 번 그렇게 됐다.
   // 세 틱(600ms) 연속으로 안 늘어야 바닥으로 본다.
+  //
+  // ★ **조용함은 스크롤이 페이지에 닿은 뒤부터 센다.** scroll 이벤트(그리고
+  // IntersectionObserver)는 화면을 그리는 프레임에 실려 나가는데, **숨긴 창은 프레임이
+  // 드물다** — 재 보니 스크롤하고 한가할 때 0.2초, CPU가 바쁘면 **0.8초 뒤에야** 이벤트가
+  // 갔다 (backgroundThrottling 과 무관하다 — 창이 화면에 없어서다). 그동안 "조용하다"를
+  // 세면 페이지는 아직 스크롤된 줄도 모르는데 바닥으로 보고 끝낸다. 전체 시험에서
+  // 가끔 늦게 붙는 부분이 통째로 빠지던 원인이 이것이었다. 그래서 실제로 움직인
+  // 스크롤은 다음 프레임이 올 때까지 기다린다 (프레임이 영영 안 와도 멈추지는 않게 상한).
+  const frame = () => new Promise((r) => {
+    let done = false;
+    const go = () => { if (!done) { done = true; r(); } };
+    requestAnimationFrame(go);
+    setTimeout(go, 2000);
+  });
   let last = -1;
   let quiet = 0;
   for (let i = 0; i < 60; i += 1) {
+    const before = [scroller.scrollTop, window.scrollY];
     try { scroller.scrollTop = scroller.scrollHeight; } catch (e) { /* 무시 */ }
     window.scrollTo(0, document.body.scrollHeight);
+    if (scroller.scrollTop !== before[0] || window.scrollY !== before[1]) await frame();
     await rest(200);
     const h = Math.max(scroller.scrollHeight || 0, document.body.scrollHeight || 0);
     if (h === last) {
@@ -141,7 +158,18 @@ const EXTRACT_NOTION = `(() => {
       const kind = kindOf(child);
       if (!kind) { walk(child, depth); continue; }
       if (kind === 'page' || kind === 'link_to_page') { walk(child, depth); continue; }
-      if (kind === 'table' || kind === 'table_row') { walk(child, depth); continue; }
+      // 표는 **그 자리에서** 줄로 푼다. 예전엔 표 줄을 전부 문서 맨 끝에 모아 붙여서,
+      // "## 스킬 순서" 아래 표 뒤에 "# 메모" 같은 제목이 오면 표 줄이 그 뒤로 밀려
+      // 섹션 밖으로 잘렸다. 라운드마다 표를 두면 어느 라운드 것인지도 잃었다.
+      if (kind === 'table' || kind === 'collection_view' || kind === 'table_row') {
+        const rows = child.tagName === 'TR' ? [child] : Array.from(child.querySelectorAll('tr'));
+        for (const row of rows) {
+          const cells = Array.from(row.querySelectorAll('td, th')).map((c) => clean(c.textContent)).filter(Boolean);
+          if (cells.length > 1) lines.push('  '.repeat(Math.min(depth, 6)) + cells.join(' | '));
+        }
+        if (rows.length === 0) walk(child, depth);
+        continue;
+      }
       const text = ownText(child, '[class*="-block"]');
       if (text) {
         const pad = '  '.repeat(Math.min(depth, 6));
@@ -152,17 +180,18 @@ const EXTRACT_NOTION = `(() => {
     }
   };
   walk(root, 0);
-  for (const row of document.querySelectorAll('.notion-table-block tr, .notion-collection_view-block tr')) {
-    const cells = Array.from(row.querySelectorAll('td, th')).map((c) => clean(c.textContent)).filter(Boolean);
-    if (cells.length > 1) lines.push(cells.join(' | '));
-  }
   return lines.join('\\n');
 })()`;
 
 /**
  * 방법 2 — **평범한 HTML 태그로.** h1·li·tr 같은 표준 태그만 본다. 노션이 클래스
- * 이름을 통째로 바꿔도 이건 산다. 같은 글이 겹쳐 나오면 제목 구조가 살아 있어도
- * 단계가 부풀어 잘못 뽑히므로, **똑같은 줄은 한 번만** 넣는다.
+ * 이름을 통째로 바꿔도 이건 산다.
+ *
+ * 겹쳐 나오는 것은 **같은 글이 두 요소에서** 나오는 경우뿐이다 — 표 줄(tr)이 칸 안의
+ * p·li 글을 이미 담고 있는데 그 p·li 를 또 넣는 것. 그래서 표 줄 **안쪽** 요소만 건너뛴다.
+ * 예전엔 "똑같은 줄은 한 번만" 넣었는데, 리셋 빌드는 라운드마다 같은 행동 줄이 흔하고
+ * 안전형·고점형 섹션마다 "### 1라운드" 가 되풀이된다 — 그게 조용히 지워져 뒤 라운드
+ * 단계가 빠지고 라벨이 "고점형 — 고점형"이 됐다. **글이 같다고 지우지 말 것.**
  */
 const EXTRACT_SEMANTIC = `(() => {
   ${OWN_TEXT}
@@ -173,14 +202,11 @@ const EXTRACT_SEMANTIC = `(() => {
   const BLOCKS = 'h1,h2,h3,h4,h5,h6,li,p,blockquote,pre,tr';
   const root = document.querySelector('main') || document.body;
   const lines = [];
-  const seen = new Set();
   const push = (line) => {
-    const key = line.trim();
-    if (!key || seen.has(key)) return;
-    seen.add(key);
-    lines.push(line);
+    if (line.trim()) lines.push(line);
   };
   for (const el of root.querySelectorAll(BLOCKS)) {
+    if (el.tagName !== 'TR' && el.closest('tr')) continue;
     if (el.tagName === 'TR') {
       const cells = Array.from(el.querySelectorAll('td, th')).map((c) => clean(c.textContent)).filter(Boolean);
       if (cells.length > 1) push(cells.join(' | '));
@@ -217,9 +243,6 @@ const TITLE = `(() => {
   return ((el && el.textContent) || document.title || '').replace(/\\u00a0/g, ' ').trim();
 })()`;
 
-/** 예전 이름 — 방법 1이 곧 예전에 쓰던 그 코드다 */
-const EXTRACT = EXTRACT_NOTION;
-
 /**
  * 페이지가 다 그려졌는지 — 노션은 껍데기부터 오므로 글이 생길 때까지 기다린다.
  *
@@ -239,7 +262,7 @@ const READY = `(() => {
 /**
  * 사람이 붙여넣은 주소를 다듬는다.
  *
- * 주소창에서 긁어 오면 `https://` 가 빠지는 일이 흔하다 (`damageamplification.notion.site/…`).
+ * 주소창에서 긁어 오면 `https://` 가 빠지는 일이 흔하다 (`어느길드.notion.site/…`).
  * 그걸 그대로 `new URL()` 에 넣으면 던져서 **"주소를 넣어주세요"만 뜨고 끝난다** —
  * 사람 입장에선 분명히 넣었는데 안 넣었다고 하는 셈이다. 앞뒤 공백과 따옴표도 뗀다.
  */
@@ -364,8 +387,11 @@ async function scrapePage(win, url, { timeout = RENDER_TIMEOUT } = {}) {
  *          maxDepth?: number, timeout?: number, browser?: any}} [options]
  * @returns {Promise<{ok: boolean, error: string, page: any, pages: number,
  *                    how: Record<string, number>,
- *                    failed: Array<{url: string, error: string}>}>}
- *   how = 방법별로 몇 페이지가 뽑혔는지 · failed = 못 연 페이지
+ *                    failed: Array<{url: string, title: string, error: string}>}>}
+ *   how = 방법별로 몇 페이지가 뽑혔는지 (묶음 페이지까지 센다 — 화면에 보일 수는
+ *         빌드 기준으로 따로 센다, index.js) · failed = 못 연 페이지
+ *
+ * 나무의 마디마다 `how`(뽑힌 방법)를 남기고, 못 연 페이지는 `failed: true` 마디로 남긴다.
  */
 async function fetchTree(url, options = {}) {
   if (!isNotionUrl(url)) {
@@ -386,11 +412,15 @@ async function fetchTree(url, options = {}) {
   const visited = new Set();
   /** @type {Record<string, number>} 방법별로 몇 페이지가 뽑혔는지 — 어느 길로 긁혔는지 보여주려고 */
   const how = {};
-  /** @type {Array<{url: string, error: string}>} 못 연 페이지 — 조용히 삼키지 않는다 */
+  /** @type {Array<{url: string, title: string, error: string}>} 못 연 페이지 — 조용히 삼키지 않는다 */
   const failed = [];
   let pages = 0;
 
-  async function visit(pageUrl, depth) {
+  /**
+   * @returns {Promise<any>} 페이지 마디. 이미 봤거나 한도를 넘었으면 null.
+   *   못 열었으면 **`failed: true` 마디**를 돌려준다 — 부르는 쪽이 나무에 남기도록.
+   */
+  async function visit(pageUrl, depth, title = '') {
     const key = pageUrl.split('?')[0];
     if (visited.has(key) || pages >= maxPages || depth > maxDepth) return null;
     visited.add(key);
@@ -404,20 +434,23 @@ async function fetchTree(url, options = {}) {
     try {
       got = await scrapePage(win, pageUrl, { timeout: options.timeout });
     } catch (e) {
-      failed.push({ url: pageUrl, error: e instanceof Error ? e.message : String(e) });
-      return null;
+      const error = e instanceof Error ? e.message : String(e);
+      failed.push({ url: pageUrl, title, error });
+      // 못 열었어도 **나무에 남긴다.** 예전엔 null 을 돌려줘서 제목조차 안 남았고,
+      // 받기는 "성공"으로 끝나 그 아래 빌드들이 조용히 사라졌다 ("빌드가 안 보인다").
+      // 이 마디를 보고 index.js 가 지난번 도감에서 그 자리를 되살리거나 ⚠ 로 보여준다.
+      return { title: title || pageUrl, url: pageUrl, markdown: '', children: [], failed: true, error };
     }
     if (options.onProgress) options.onProgress(pages, got.title);
     // 세 방법 중 **실제로 제일 잘 읽히는 것**을 쓴다 (pickBody가 파서에 넣어 보고 고른다)
     const best = pickBody(got.candidates);
     how[best.how] = (how[best.how] || 0) + 1;
     /** @type {any} */
-    const node = { title: got.title, url: pageUrl, markdown: best.markdown, children: [] };
+    const node = { title: got.title || title, url: pageUrl, markdown: best.markdown, how: best.how, children: [] };
     for (const link of got.links) {
       const next = resolveLink(link.href, pageUrl);
       if (!next) continue;
-      const child = await visit(next, depth + 1);
-      // 못 열었으면 제목만이라도 남긴다 — 통째로 사라지는 것보다 낫다
+      const child = await visit(next, depth + 1, link.title);
       if (child) node.children.push(child);
     }
     return node;
@@ -425,8 +458,9 @@ async function fetchTree(url, options = {}) {
 
   try {
     const page = await visit(start, 0);
+    const ok = Boolean(page) && !page.failed;
     const why = failed.length > 0 ? failed[0].error : '페이지를 못 읽었어요.';
-    return { ok: Boolean(page), error: page ? '' : why, page, pages, how, failed };
+    return { ok, error: ok ? '' : why, page: ok ? page : null, pages, how, failed };
   } catch (e) {
     const message = e instanceof Error ? e.message : String(e);
     return { ok: false, error: `노션에서 도감을 못 받았어요: ${message}`, page: null, pages, how, failed };
@@ -443,6 +477,9 @@ async function fetchTree(url, options = {}) {
  * 재현해야 하므로, 앱이 실제로 본 결과까지 같이 담는다.
  */
 async function dumpDiagnostics(url, { timeout = RENDER_TIMEOUT } = {}) {
+  // 아무 주소나 열지 않는다 — 부르는 쪽이 먼저 거르지만 여기서도 한 번 더 막는다.
+  // 예전엔 주소 오타 하나에 20초를 기다린 뒤 노션과 무관한 페이지를 바탕화면에 떴다.
+  if (!isNotionUrl(url)) throw new Error('노션 공개 페이지 주소가 아니에요.');
   const win = createBrowser();
   const address = normalizeUrl(url);
   try {
@@ -472,22 +509,15 @@ async function dumpDiagnostics(url, { timeout = RENDER_TIMEOUT } = {}) {
   }
 }
 
-/** 예전 이름 — HTML 한 장만 (index.js 가 아직 쓴다) */
-async function dumpHtml(url, opts = {}) {
-  return (await dumpDiagnostics(url, opts)).html;
-}
-
 module.exports = {
   fetchTree,
   scrapePage,
   createBrowser,
   dumpDiagnostics,
-  dumpHtml,
   isNotionUrl,
   normalizeUrl,
   resolveLink,
   PREPARE,
-  EXTRACT,
   EXTRACT_NOTION,
   EXTRACT_SEMANTIC,
   EXTRACT_PLAIN,
